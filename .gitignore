@@ -11,9 +11,8 @@
 *.dummy
 *.exe
 *-test
-/doc/
 /target/
-/examples/*
-!/examples/*.rs
 Cargo.lock
+server/target
+server/Cargo.lock
 

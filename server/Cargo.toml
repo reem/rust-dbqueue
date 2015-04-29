@@ -1,0 +1,16 @@
+[package]
+
+name = "dbqueue-server"
+version = "0.0.1"
+authors = ["Jonathan Reem <jonathan.reem@gmail.com>"]
+repository = "https://github.com/reem/rust-dbqueue.git"
+description = "A distributed queue with a client server model."
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+mio = { git = "http://github.com/carllerche/mio" }
+eventual = { git = "http://github.com/carllerche/eventual" }
+comm = { git = "http://github.com/mahkoh/comm" }
+rustc-serialize = "~0.3"
+
