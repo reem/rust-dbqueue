@@ -1,3 +1,4 @@
+#![feature(std_misc)]
 //! # Queue Server
 //!
 //! The server component of this simple queueing is responsible
@@ -17,6 +18,8 @@ use eventual::Future;
 mod error;
 mod rt;
 mod executor;
+mod queue;
+mod connection;
 
 pub struct Server {
     notify: mio::Sender<rt::Message>,
@@ -26,15 +29,16 @@ pub struct Server {
 impl Server {
     /// Create a server running on the passed executor.
     pub fn start<E>(exec: E) -> Result<Server> where E: Executor {
-        Server::configured(exec, Default::default());
+        Server::configured(exec, Default::default())
     }
 
     /// Create a server using a specific event loop configuration.
     pub fn configured<E>(exec: E, config: mio::EventLoopConfig) -> Result<Server>
     where E: Executor {
          // TODO: Convert to try! by adding From impl
-         let evloop = mio::EventLoop::configured(config).unwrap();
-         let handler = rt::Handler::new();
+         let mut evloop = mio::EventLoop::configured(config).unwrap();
+         // TODO: Make capacity configurable
+         let mut handler = rt::Handler::new(32 * 1024);
          let notify = evloop.channel();
 
          let shutdown = {
