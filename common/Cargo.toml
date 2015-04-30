@@ -1,0 +1,15 @@
+[package]
+
+name = "dbqueue-common"
+version = "0.0.1"
+authors = ["Jonathan Reem <jonathan.reem@gmail.com>"]
+repository = "https://github.com/reem/rust-dbqueue.git"
+description = "A distributed queue with a client server model."
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+rustc-serialize = "~0.3"
+bincode = "~0.1"
+uuid = "~0.1"
+
