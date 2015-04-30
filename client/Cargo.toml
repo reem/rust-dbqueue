@@ -1,0 +1,14 @@
+[package]
+
+name = "dbqueue-client"
+version = "0.0.1"
+authors = ["Jonathan Reem <jonathan.reem@gmail.com>"]
+repository = "https://github.com/reem/rust-dbqueue.git"
+description = "A distributed queue with a client server model."
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+uuid = "~0.1"
+dbqueue-common = { path = "../common" }
+
