@@ -14,7 +14,7 @@ use {Error};
 pub struct Connection {
     connection: NonBlock<TcpStream>,
     incoming: Vec<u8>,
-    outgoing: Option<Cursor<Vec<u8>>>,
+    outgoing: Vec<Cursor<Vec<u8>>>,
     unconfirmed: HashMap<Uuid, (Complete<(), Error>, Future<(), Error>)>
 }
 
@@ -24,7 +24,7 @@ impl Connection {
         Connection {
             connection: connection,
             incoming: Vec::new(),
-            outgoing: None,
+            outgoing: vec![],
             unconfirmed: HashMap::new()
         }
     }
@@ -48,14 +48,7 @@ impl Connection {
             // Chop off the message we just processed.
             self.incoming = self.incoming[message_len as usize..].to_vec();
 
-            // Due to the blocking nature of the Clients, if we have received
-            // a ClientMessage we cannot have a pending ServerMessage, since a
-            // Client must wait for a complete response before writing
-            if self.outgoing.is_some() {
-                return Err(());
-            }
-
-            self.outgoing = Some(Cursor::new(match message {
+            let outgoing = Cursor::new(match message {
                 ClientMessage::CreateQueue(id) => {
                     queues.entry(id)
                         .or_insert_with(|| Queue(Default::default()));
@@ -124,7 +117,9 @@ impl Connection {
                             }
                         }).unwrap_or(ServerMessage::NoSuchEntity)
                 }
-            }.encode().unwrap()));
+            }.encode().unwrap());
+
+            self.outgoing.push(outgoing);
 
             Ok(())
         } else if self.incoming.len() as u64 > MAX_CLIENT_MESSAGE_LEN {
@@ -137,16 +132,13 @@ impl Connection {
 
     #[inline]
     pub fn writable(&mut self) {
-        let copy = if let Some(ref mut outgoing) = self.outgoing {
+        let len = self.outgoing.len();
+        if len == 0 { return }
+        let copied = if let Some(outgoing) = self.outgoing.get_mut(len - 1) {
             io::copy(outgoing, &mut self.connection)
         } else { Ok(0) };
 
-        match copy {
-            Ok(_) => self.outgoing = None,
-            // TODO: Error reporter
-            // TODO: Check for WouldBlock
-            Err(_) => {}
-        };
+        if let Ok(0) = copied { self.outgoing.pop(); }
     }
 }
 
