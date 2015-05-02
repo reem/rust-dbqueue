@@ -42,7 +42,7 @@ pub enum ClientMessage {
     ///
     /// This should be called before the timeout on the associated Read message
     /// elapses.
-    Confirm(String, Uuid)
+    Confirm(Uuid)
 }
 
 #[derive(Debug, RustcDecodable, RustcEncodable)]
@@ -53,11 +53,28 @@ pub enum ServerMessage {
     /// The requested queue was deleted, and can no longer receive messages.
     QueueDeleted,
 
+    /// The sent object was added to the queue.
+    ObjectQueued(Uuid),
+
     /// The response to Read ClientMessage's, which contains the data and
     /// the id of that data.
     // FIXME: TyOverby/bincode#34
     // This Vec<u8> should be a RefBox<'a, [u8]>
-    Read(Uuid, Vec<u8>)
+    Read(Uuid, Vec<u8>),
+
+    /// The Confirm message was received in time, and the data has not been
+    /// requeued.
+    Confirmed,
+
+    /// The Confirm message was not received in time, and the data was requeued.
+    Requeued,
+
+    /// A Read was requested on a queue with no data.
+    Empty,
+
+    /// A message was sent with a non-existent uuid, or a queue was accessed that
+    /// does not exist.
+    NoSuchEntity
 }
 
 impl ClientMessage {
@@ -69,7 +86,7 @@ impl ClientMessage {
 
     /// Called on the server, to deserialize from a received message.
     #[inline]
-    pub fn decode(buf: &[u8]) -> DecodingResult<ClientMessage> {
+    pub fn decode(buf: &[u8]) -> DecodingResult<(ClientMessage, u64)> {
         bincode::decode(buf)
     }
 }
@@ -83,7 +100,7 @@ impl ServerMessage {
 
     /// Called on the client, to deserialize over the wire.
     #[inline]
-    pub fn decode_from<R: Read>(read: &mut R) -> DecodingResult<ServerMessage> {
+    pub fn decode_from<R: Read>(read: &mut R) -> DecodingResult<(ServerMessage, u64)> {
         bincode::decode_from(read, SERVER_SIZE_LIMIT)
     }
 }
