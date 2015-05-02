@@ -19,4 +19,6 @@ client/target
 client/Cargo.lock
 common/target
 common/Cargo.lock
+tests/target
+tests/Cargo.lock
 
