@@ -8,7 +8,7 @@ extern crate eventual;
 #[cfg(test)]
 mod test {
     use dbqueue_server::{Server};
-    use dbqueue_client::{Client};
+    use dbqueue_client::{Client, Message};
 
     use mio::tcp;
     use eventual::Async;
@@ -28,8 +28,7 @@ mod test {
     fn test_single_create_send_read_confirm() {
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
-        let acceptor = tcp::listen(&addr).unwrap();
-        server.listen(acceptor).await().unwrap();
+        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
 
         let mut client = Client::connect(addr).unwrap();
 
@@ -39,6 +38,35 @@ mod test {
         let response = client.read_ms(foo, 1000).unwrap();
         assert_eq!(response.data, vec![16; 100]);
         client.confirm(response.id).unwrap();
+    }
+
+    #[test]
+    fn test_multiple_items_in_one_queue() {
+        let data = [vec![56; 200], vec![243;200], vec![78;200]];
+
+        let addr = sock();
+        let server = Server::start(|x| { thread::spawn(x); }).unwrap();
+        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+
+        let mut client = Client::connect(addr).unwrap();
+
+        let foo = client.create(String::from("foo")).unwrap();
+
+        for datum in &data {
+            client.send(foo.clone(), datum.clone()).unwrap();
+        }
+
+        let responses = (0..data.len()).map(|_| {
+            client.read_ms(foo.clone(), 1000).unwrap()
+        }).collect::<Vec<Message>>();
+
+        for (response, data) in responses.iter().zip(data.iter()) {
+            assert_eq!(&response.data, &*data);
+        }
+
+        for response in responses {
+            client.confirm(response.id).unwrap();
+        }
     }
 }
 
