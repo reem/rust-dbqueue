@@ -9,8 +9,10 @@ readme = "README.md"
 license = "MIT"
 
 [dependencies]
-mio = { git = "http://github.com/carllerche/mio" }
+dbqueue-common = { path = "../common" }
+mio = { git = "http://github.com/reem/mio", branch = "nonblock-read-write-impls" }
 eventual = { git = "http://github.com/carllerche/eventual" }
-comm = { git = "http://github.com/mahkoh/comm" }
-rustc-serialize = "~0.3"
+uuid = "~0.1"
+iobuf = "~5"
+threadpool = "~0.1"
 
