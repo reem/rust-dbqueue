@@ -1,6 +1,7 @@
 use std::io;
 
 /// Errors which can occur on the server.
+#[derive(Debug)]
 pub enum Error {
     Notify,
     Io(io::Error)
