@@ -1,14 +1,40 @@
-use std::collections::HashMap;
+use std::collections::{VecDeque, HashMap};
 use std::net::TcpListener;
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::ops;
 
 use mio::{self, EventLoop, Token, ReadHint, Interest, PollOpt, NonBlock};
 use mio::util::Slab;
 
 use eventual::Complete;
 
-use queue::Queue;
+use uuid::Uuid;
+
 use connection::Connection;
 use {Error};
+
+/// Since we are single threaded, we can get away with the vast majority
+/// of synchronization overhead and use a simple ring buffer for our queue.
+///
+/// We need shared ownership via Rc and RefCell to make handling of
+/// re-queueing much simpler, as we can capture a queue.
+///
+/// If we were mulithreaded a lock free multiple producer multiple consumer
+/// queue would be appropriate.
+#[derive(Clone, Debug)]
+pub struct Queue(pub Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>>);
+
+// To work around hopefully temporarily limitations in eventual,
+// we have to lie to the compiler about being Send.
+//
+// This is safe in our program because we are single threaded.
+unsafe impl Send for Queue { }
+
+impl ops::Deref for Queue {
+    type Target = Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>>;
+    fn deref(&self) -> &Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>> { &self.0 }
+}
 
 /// Messages sent from the Server handle to the actual event loop,
 /// through the event loop's notify queue.
@@ -16,9 +42,8 @@ use {Error};
 /// The runtime is told to create and destroy queues this way,
 /// and can also be requested to shut down.
 pub enum Message {
-    Create(Complete<(), Error>, String),
-    Delete(Complete<(), Error>, String),
-    Shutdown
+    Shutdown,
+    Acceptor(NonBlock<TcpListener>, Complete<(), Error>)
 }
 
 pub struct Handler {
@@ -39,6 +64,10 @@ impl Handler {
         }
     }
 
+    // This is a method on the Handler since it needs mutable access to the Slab
+    // and Acceptor, which means we can't pass both as arguments and instead have to
+    // just pass the Handler/Slab.
+    #[inline]
     fn accept(&mut self, evloop: &mut EventLoop<Handler>, token: Token) {
         let connection = {
             if let &mut Registration::Acceptor(ref mut acceptor) = &mut self.slab[token] {
@@ -55,14 +84,10 @@ impl Handler {
 
                 // TODO: Error reporter
                 let _ = evloop.register_opt(
-                    // ugh
-                    match self.slab[token] {
-                        Registration::Connection(ref conn) => conn.connection(),
-                        _ => panic!("Expected connection, found acceptor.")
-                    },
+                    self.connection_at(token).connection(),
                     token,
-                    Interest::readable(),
-                    PollOpt::edge()
+                    Interest::readable() | Interest::writable(),
+                    PollOpt::level()
                 );
             },
 
@@ -75,19 +100,28 @@ impl Handler {
         }
     }
 
-    fn advance_readable_connection(&mut self, evloop: &mut EventLoop<Handler>,
-                                   token: Token) {
-
-    }
-
-    fn advance_writable_connection(&mut self, evloop: &mut EventLoop<Handler>,
-                                   token: Token) {
-
-    }
-
     fn register(&mut self, registration: Registration) -> Token {
         self.slab.insert(registration)
             .ok().expect("No space for a new registration in the handler slab.")
+    }
+
+    fn disconnect(&mut self, token: Token) {
+        // Will also close the associated acceptor/connection.
+        self.slab.remove(token);
+    }
+
+    fn acceptor_at(&self, token: Token) -> &NonBlock<TcpListener> {
+        match &self.slab[token] {
+            &Registration::Acceptor(ref acc) => acc,
+            _ => panic!("Expected acceptor, found connection.")
+        }
+    }
+
+    fn connection_at(&self, token: Token) -> &Connection {
+        match &self.slab[token] {
+            &Registration::Connection(ref conn) => conn,
+            _ => panic!("Expected connection, found acceptor.")
+        }
     }
 }
 
@@ -99,46 +133,57 @@ impl mio::Handler for Handler {
                 token: Token, _: ReadHint) {
         if !self.slab.contains(token) { return }
 
-        match self.slab[token] {
-            Registration::Acceptor(_) => {
-                self.accept(evloop, token)
-            },
-            Registration::Connection(_) => {
-                self.advance_readable_connection(evloop, token)
-            }
+        // We need this little next hack because we can't borrow self within
+        // this match block, so we have to decide what to do and then do it
+        // after the match has exited.
+        let next = match &mut self.slab[token] {
+            &mut Registration::Connection(ref mut conn) =>
+                match conn.readable(&mut self.queues, evloop) {
+                    Ok(()) => return,
+                    Err(()) => true
+                },
+            _ => false
+        };
+
+        if next { // A connection hit a fatal error.
+            self.disconnect(token)
+        } else { // An acceptor is ready to accept a new connection.
+            self.accept(evloop, token);
         }
     }
 
-    fn writable(&mut self, evloop: &mut EventLoop<Handler>,
+    fn writable(&mut self, _: &mut EventLoop<Handler>,
                  token: Token) {
         if !self.slab.contains(token) { return }
 
-        match self.slab[token] {
-            Registration::Acceptor(_) => { panic!("Received writable on an acceptor.") },
-            Registration::Connection(_) => {
-                self.advance_writable_connection(evloop, token)
-            }
+        match &mut self.slab[token] {
+            &mut Registration::Connection(ref mut conn) => conn.writable(),
+            _ => { panic!("Received writable on an acceptor.") }
         }
     }
 
     fn notify(&mut self, evloop: &mut EventLoop<Handler>, message: Message) {
         match message {
-            Message::Create(complete, id) => {
-                // TODO: Add queue configuration.
-                self.queues.entry(id).or_insert_with(Queue::new);
-                complete.complete(());
-            },
-
-            Message::Delete(complete, id) => {
-                self.queues.remove(&id);
-                complete.complete(());
-            },
-
             Message::Shutdown => {
                 // Will trigger the shutdown future to complete.
                 evloop.shutdown();
+            },
+            Message::Acceptor(acceptor, future) => {
+                let token = self.register(Registration::Acceptor(acceptor));
+                // TODO: Error reporter
+                let _ = evloop.register_opt(
+                    self.acceptor_at(token),
+                    token,
+                    Interest::readable(),
+                    PollOpt::level()
+                );
+                future.complete(());
             }
         }
+    }
+
+    fn timeout(&mut self, _: &mut EventLoop<Handler>, future: Complete<(), Error>) {
+        future.complete(());
     }
 }
 

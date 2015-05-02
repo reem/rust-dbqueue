@@ -6,19 +6,23 @@
 //! and also responding for completing client requests on those queues.
 //!
 
-// extern crate dbqueue_common as common;
+extern crate dbqueue_common as common;
 extern crate eventual;
 extern crate mio;
+extern crate iobuf;
+extern crate uuid;
+extern crate threadpool;
 
 pub use error::{Error, Result};
 pub use executor::Executor;
 
+use mio::NonBlock;
+use std::net::TcpListener;
 use eventual::Future;
 
 mod error;
 mod rt;
 mod executor;
-mod queue;
 mod connection;
 
 pub struct Server {
@@ -29,16 +33,16 @@ pub struct Server {
 impl Server {
     /// Create a server running on the passed executor.
     pub fn start<E>(exec: E) -> Result<Server> where E: Executor {
-        Server::configured(exec, Default::default())
+        Server::configured(exec, Default::default(), 32 * 1024)
     }
 
     /// Create a server using a specific event loop configuration.
-    pub fn configured<E>(exec: E, config: mio::EventLoopConfig) -> Result<Server>
+    pub fn configured<E>(exec: E, config: mio::EventLoopConfig,
+                         slab_size: usize) -> Result<Server>
     where E: Executor {
          // TODO: Convert to try! by adding From impl
          let mut evloop = mio::EventLoop::configured(config).unwrap();
-         // TODO: Make capacity configurable
-         let mut handler = rt::Handler::new(32 * 1024);
+         let mut handler = rt::Handler::new(slab_size);
          let notify = evloop.channel();
 
          let shutdown = {
@@ -60,37 +64,12 @@ impl Server {
          })
     }
 
-    // NOTE:
-    // Some unfortunate code duplication in these methods due to
-    // the Shutdown message operating differently than the rest.
-
-    /// Create a queue asynchronously.
-    ///
-    /// The returned future will be completed when the queue is fully
-    /// initialized and ready to receive messages.
-    pub fn create(&self, queue: String) -> Future<(), Error> {
+    pub fn listen(&self, acceptor: NonBlock<TcpListener>) -> Future<(), Error> {
         let (tx, rx) = Future::pair();
-
-        match self.notify.send(rt::Message::Create(tx, queue)) {
-            Ok(()) => {},
-            Err(_) => return Future::error(Error::Notify)
-        };
-
-        rx
-    }
-
-    /// Delete a queue asynchronously.
-    ///
-    /// The returned future will be completed when the queue is torn down.
-    pub fn delete(&self, queue: String) -> Future<(), Error> {
-        let (tx, rx) = Future::pair();
-
-        match self.notify.send(rt::Message::Delete(tx, queue)) {
-            Ok(()) => {},
-            Err(_) => return Future::error(Error::Notify)
-        };
-
-        rx
+        match self.notify.send(rt::Message::Acceptor(acceptor, tx)) {
+            Ok(()) => rx,
+            Err(_) => Future::error(Error::Notify)
+        }
     }
 
     /// Shut down this server relatively gracefully.
@@ -103,4 +82,3 @@ impl Server {
         }
     }
 }
-
