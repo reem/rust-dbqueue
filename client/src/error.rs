@@ -1,9 +1,17 @@
+use uuid::Uuid;
 use common::{DecodingError, EncodingError};
 use std::io;
 
+use {QueueId};
+
+#[derive(Debug)]
 pub enum Error {
     Encoding(EncodingError),
     Decoding(DecodingError),
+    NoQueue(QueueId),
+    NoObject(Uuid),
+    Requeued,
+    Empty,
     Io(io::Error)
 }
 

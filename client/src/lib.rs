@@ -11,6 +11,8 @@ extern crate uuid;
 pub use common::{EncodingError, DecodingError};
 pub use error::{Error, Result};
 
+use common::{ClientMessage, ServerMessage};
+
 use uuid::Uuid;
 use std::net::{ToSocketAddrs, TcpStream};
 use std::io::{self, Read, Write};
@@ -26,6 +28,7 @@ pub struct Message {
     pub data: Vec<u8>
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub struct QueueId(String);
 
 impl From<String> for QueueId {
@@ -48,30 +51,26 @@ impl<S: Read + Write> Client<S> {
 
     /// Create a new queue.
     pub fn create(&mut self, queue_name: String) -> Result<QueueId> {
-        let outgoing = common::ClientMessage::CreateQueue(queue_name.clone());
-        try!(outgoing.encode_to(&mut self.connection));
-
-        let incoming = try!(common::ServerMessage::decode_from(&mut self.connection));
-
-        match incoming {
-            common::ServerMessage::QueueCreated => {
-                Ok(QueueId::from(queue_name))
-            },
+        match try!(self.send_message(ClientMessage::CreateQueue(queue_name.clone()))) {
+            ServerMessage::QueueCreated => Ok(QueueId::from(queue_name)),
             _ => panic!("Received incorrect message from the server.")
         }
     }
 
     /// Delete an existing queue.
     pub fn delete(&mut self, queue: QueueId) -> Result<()> {
-        let outgoing = common::ClientMessage::DeleteQueue(queue.0);
-        try!(outgoing.encode_to(&mut self.connection));
+        match try!(self.send_message(ClientMessage::DeleteQueue(queue.0.clone()))) {
+            ServerMessage::QueueDeleted => Ok(()),
+            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
+            _ => panic!("Received incorrect message from the server.")
+        }
+    }
 
-        let incoming = try!(common::ServerMessage::decode_from(&mut self.connection));
-
-        match incoming {
-            common::ServerMessage::QueueDeleted => {
-                Ok(())
-            },
+    /// Send an object to an existing queue on the server.
+    pub fn send(&mut self, queue: QueueId, data: Vec<u8>) -> Result<Uuid> {
+        match try!(self.send_message(ClientMessage::Enqueue(queue.0.clone(), data))) {
+            ServerMessage::ObjectQueued(id) => Ok(id),
+            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
             _ => panic!("Received incorrect message from the server.")
         }
     }
@@ -84,15 +83,12 @@ impl<S: Read + Write> Client<S> {
     ///
     /// Timeouts are given in milliseconds. A timeout of 0 indicates no timeout.
     pub fn read_ms(&mut self, queue: QueueId, timeout: u64) -> Result<Message> {
-        let outgoing = common::ClientMessage::Read(queue.0, timeout);
-        try!(outgoing.encode_to(&mut self.connection));
-
-        let incoming = try!(common::ServerMessage::decode_from(&mut self.connection));
-
-        match incoming {
-            common::ServerMessage::Read(id, data) => {
+        match try!(self.send_message(ClientMessage::Read(queue.0.clone(), timeout))) {
+            ServerMessage::Read(id, data) => {
                 Ok(Message { id: id, data: data })
             },
+            ServerMessage::Empty => Err(Error::Empty),
+            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
             _ => panic!("Received incorrect message from the server.")
         }
     }
@@ -101,9 +97,19 @@ impl<S: Read + Write> Client<S> {
     /// be requeued.
     ///
     /// This should be called before the timeout on the associated read elapses.
-    pub fn confirm(&mut self, queue: QueueId, entity_id: Uuid) -> Result<()> {
-        let outgoing = common::ClientMessage::Confirm(queue.0, entity_id);
-        Ok(try!(outgoing.encode_to(&mut self.connection)))
+    pub fn confirm(&mut self, entity_id: Uuid) -> Result<()> {
+        match try!(self.send_message(ClientMessage::Confirm(entity_id))) {
+            ServerMessage::Confirmed => Ok(()),
+            ServerMessage::Requeued => Err(Error::Requeued),
+            ServerMessage::NoSuchEntity => Err(Error::NoObject(entity_id)),
+            _ => panic!("Received incorrect message from the server.")
+        }
+    }
+
+    fn send_message(&mut self, message: ClientMessage) -> Result<ServerMessage> {
+        try!(message.encode_to(&mut self.connection));
+        println!("Message sent, waiting for response.");
+        ServerMessage::decode_from(&mut self.connection).map(|x| x.0).map_err(Error::from)
     }
 }
 
