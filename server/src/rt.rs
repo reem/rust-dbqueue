@@ -140,7 +140,8 @@ impl mio::Handler for Handler {
             &mut Registration::Connection(ref mut conn) =>
                 match conn.readable(&mut self.queues, evloop) {
                     Ok(()) => return,
-                    Err(()) => true
+                    // TODO: Error Reporter
+                    Err(_) => true
                 },
             _ => false
         };

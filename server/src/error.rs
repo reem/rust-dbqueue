@@ -1,9 +1,12 @@
+use mio::TimerError;
 use std::io;
 
 /// Errors which can occur on the server.
 #[derive(Debug)]
 pub enum Error {
     Notify,
+    OverLongMessage,
+    Timer(TimerError),
     Io(io::Error)
 }
 
@@ -14,5 +17,7 @@ impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error { Error::Io(err) }
 }
 
-// TODO: Don't throw away information by using appropriate From impls.
+impl From<TimerError> for Error {
+    fn from(err: TimerError) -> Error { Error::Timer(err) }
+}
 

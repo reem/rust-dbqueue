@@ -47,15 +47,11 @@ impl<'a, S: Read + Write> Iterator for ResponseIter<'a, S> {
     type Item = ServerMessage;
 
     fn next(&mut self) -> Option<ServerMessage> {
-        println!("Getting next response.");
         if self.parent.expecting == 0 {
-            println!("No more responses.");
             None
         } else {
-            println!("Waiting for response.");
             match ServerMessage::decode_from(&mut self.parent.stream) {
                 Ok(message) => {
-                    println!("Response decoded.");
                     self.parent.expecting -= 1;
                     Some(message.0)
                 },

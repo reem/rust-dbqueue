@@ -6,15 +6,15 @@ use common::{ClientMessage, ServerMessage, MAX_CLIENT_MESSAGE_LEN};
 use rt::{Handler, Queue};
 
 use std::net::TcpStream;
-use std::io::{self, Cursor};
-use std::collections::HashMap;
+use std::io::{self, Cursor, ErrorKind};
+use std::collections::{HashMap, VecDeque};
 
 use {Error};
 
 pub struct Connection {
     connection: NonBlock<TcpStream>,
     incoming: Vec<u8>,
-    outgoing: Vec<Cursor<Vec<u8>>>,
+    outgoing: VecDeque<Cursor<Vec<u8>>>,
     unconfirmed: HashMap<Uuid, (Complete<(), Error>, Future<(), Error>)>
 }
 
@@ -24,7 +24,7 @@ impl Connection {
         Connection {
             connection: connection,
             incoming: Vec::new(),
-            outgoing: vec![],
+            outgoing: VecDeque::new(),
             unconfirmed: HashMap::new()
         }
     }
@@ -37,14 +37,17 @@ impl Connection {
 
     #[inline]
     pub fn readable(&mut self, queues: &mut HashMap<String, Queue>,
-                    evloop: &mut EventLoop<Handler>) -> Result<(), ()> {
-        // TODO: Error reporter
-        // TODO: Check for WouldBlock
-        let _ = io::copy(&mut self.connection, &mut self.incoming);
+                    evloop: &mut EventLoop<Handler>) -> Result<(), Error> {
+        match io::copy(&mut self.connection, &mut self.incoming) {
+            Ok(_) => {},
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {},
+            Err(e) => return Err(Error::from(e)),
+        };
 
-        let message = ClientMessage::decode(&self.incoming);
-
-        if let Ok((message, message_len)) = message {
+        // Process 1 or more messages read into the incoming buffer.
+        //
+        // Sometimes more than one message will be transferred.
+        while let Ok((message, message_len)) = ClientMessage::decode(&self.incoming) {
             // Chop off the message we just processed.
             self.incoming = self.incoming[message_len as usize..].to_vec();
 
@@ -70,37 +73,37 @@ impl Connection {
                 },
 
                 ClientMessage::Read(id, timeout) => {
-                    queues.get(&id).cloned().map(|queue| {
-                        let (uuid, object) = match queue.borrow_mut().pop_front() {
-                            Some(x) => x,
-                            None => return ServerMessage::Empty
-                        };
+                    if let Some(queue) = queues.get(&id).cloned() {
+                        let top = queue.borrow_mut().pop_front();
+                        if let Some((uuid, object)) = top {
+                            let (timeout_tx, timeout_rx) = Future::pair();
+                            let (confirm_tx, confirm_rx) = Future::pair();
+                            let (cancellation_tx, cancellation_rx) = Future::pair();
 
-                        let (timeout_tx, timeout_rx) = Future::pair();
-                        let (confirm_tx, confirm_rx) = Future::pair();
-                        let (cancellation_tx, cancellation_rx) = Future::pair();
+                            try!(evloop.timeout_ms(timeout_tx, timeout));
 
-                        // TODO: Error reporter
-                        let _ = evloop.timeout_ms(timeout_tx, timeout);
+                            let (cuuid, cobject) = (uuid.clone(), object.clone());
+                            eventual::select((timeout_rx, confirm_rx))
+                                .map(move |(choice, _)| {
+                                    match choice {
+                                        // Timeout expired first.
+                                        0 => queue.borrow_mut().push_front((cuuid, cobject)),
+                                        // Confirm received first.
+                                        1 => cancellation_tx.complete(()),
+                                        x => panic!("Received impossible hint {:?} from select", x)
+                                    }
+                                }).fire();
 
-                        // Set up re-queuing.
-                        let (cuuid, cobject) = (uuid.clone(), object.clone());
-                        eventual::select((timeout_rx, confirm_rx))
-                            .map(move |(choice, _)| {
-                                match choice {
-                                    // Timeout expired first.
-                                    0 => queue.borrow_mut().push_front((cuuid, cobject)),
-                                    // Confirm received first.
-                                    1 => cancellation_tx.complete(()),
-                                    x => panic!("Received impossible hint {:?} from select", x)
-                                }
-                            }).fire();
+                            self.unconfirmed.insert(uuid.clone(),
+                                                    (confirm_tx, cancellation_rx));
 
-                        self.unconfirmed.insert(uuid.clone(),
-                                                (confirm_tx, cancellation_rx));
-
-                        ServerMessage::Read(uuid, object)
-                    }).unwrap_or(ServerMessage::NoSuchEntity)
+                            ServerMessage::Read(uuid, object)
+                        } else {
+                            ServerMessage::Empty
+                        }
+                    } else {
+                        ServerMessage::NoSuchEntity
+                    }
                 },
 
                 ClientMessage::Confirm(uuid) => {
@@ -119,12 +122,12 @@ impl Connection {
                 }
             }.encode().unwrap());
 
-            self.outgoing.push(outgoing);
+            self.outgoing.push_back(outgoing);
+        }
 
-            Ok(())
-        } else if self.incoming.len() as u64 > MAX_CLIENT_MESSAGE_LEN {
+        if self.incoming.len() as u64 > MAX_CLIENT_MESSAGE_LEN {
             // The client has sent an overlong message.
-            Err(())
+            Err(Error::OverLongMessage)
         } else {
             Ok(())
         }
@@ -132,13 +135,16 @@ impl Connection {
 
     #[inline]
     pub fn writable(&mut self) {
-        let len = self.outgoing.len();
-        if len == 0 { return }
-        let copied = if let Some(outgoing) = self.outgoing.get_mut(len - 1) {
-            io::copy(outgoing, &mut self.connection)
-        } else { Ok(0) };
-
-        if let Ok(0) = copied { self.outgoing.pop(); }
+        while self.outgoing.len() != 0 {
+            let mut top = self.outgoing.pop_front().unwrap();
+            match io::copy(&mut top, &mut self.connection) {
+                Ok(0) | Err(_) => {
+                    self.outgoing.push_front(top);
+                    break
+                },
+                Ok(_) => continue,
+            }
+        }
     }
 }
 

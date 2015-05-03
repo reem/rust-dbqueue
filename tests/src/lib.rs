@@ -127,39 +127,25 @@ mod test {
 
         let mut client = PipelinedClient::connect(addr).unwrap();
 
-        println!("Connected");
-
         // Send all requests without waiting for responses.
         for request in &requests_phase_1 {
-            println!("Sending: {:?}", request);
             client.send(request).unwrap();
         }
-
-        println!("Sent requests_phase_1");
 
         let (id1, id2, id3, data1, data2, data3) = {
             let mut responses = client.iter();
             assert_eq!(responses.next().unwrap(), ServerMessage::QueueCreated);
-            println!("Received a response.");
 
             let id1 = unwrap_queued_message(responses.next().unwrap());
-            println!("Received a response.");
             let id2 = unwrap_queued_message(responses.next().unwrap());
-            println!("Received a response.");
             let data1 = unwrap_data_message(responses.next().unwrap());
-            println!("Received a response.");
             let id3 = unwrap_queued_message(responses.next().unwrap());
-            println!("Received a response.");
             let data2 = unwrap_data_message(responses.next().unwrap());
-            println!("Received a response.");
             let data3 = unwrap_data_message(responses.next().unwrap());
 
-            println!("Received responses.");
 
             (id1, id2, id3, data1, data2, data3)
         };
-
-        println!("Received responses to phase 1");
 
         assert_eq!(data1, vec![1; 128]);
         assert_eq!(data2, vec![2; 128]);
