@@ -12,6 +12,7 @@ pub enum Error {
     NoObject(Uuid),
     Requeued,
     Empty,
+    NoResponseExpected,
     Io(io::Error)
 }
 

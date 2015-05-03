@@ -10,6 +10,7 @@ extern crate uuid;
 
 pub use common::{EncodingError, DecodingError};
 pub use error::{Error, Result};
+pub use pipeline::{Pipeline, ResponseIter};
 
 use common::{ClientMessage, ServerMessage};
 
@@ -18,9 +19,10 @@ use std::net::{ToSocketAddrs, TcpStream};
 use std::io::{self, Read, Write};
 
 mod error;
+mod pipeline;
 
 pub struct Client<S: Read + Write = TcpStream> {
-    connection: S
+    pipeline: Pipeline<S>
 }
 
 pub struct Message {
@@ -46,7 +48,7 @@ impl Client {
 impl<S: Read + Write> Client<S> {
     /// Create a new Client which reads and writes from the passed stream.
     pub fn new(stream: S) -> Client<S> {
-        Client { connection: stream }
+        Client { pipeline: Pipeline::new(stream) }
     }
 
     /// Create a new queue.
@@ -107,9 +109,8 @@ impl<S: Read + Write> Client<S> {
     }
 
     fn send_message(&mut self, message: ClientMessage) -> Result<ServerMessage> {
-        try!(message.encode_to(&mut self.connection));
-        println!("Message sent, waiting for response.");
-        ServerMessage::decode_from(&mut self.connection).map(|x| x.0).map_err(Error::from)
+        try!(self.pipeline.send(message));
+        self.pipeline.receive()
     }
 }
 
