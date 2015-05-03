@@ -4,14 +4,19 @@ extern crate dbqueue_client;
 extern crate dbqueue_common;
 extern crate mio;
 extern crate eventual;
+extern crate uuid;
 
 #[cfg(test)]
 mod test {
     use dbqueue_server::{Server};
-    use dbqueue_client::{Client, Message};
+    use dbqueue_client::{Client, Message, PipelinedClient};
+    use dbqueue_common::{ClientMessage, ServerMessage};
 
-    use mio::tcp;
+    use dbqueue_client::Error as ClientError;
+
+    use mio::{EventLoopConfig, tcp};
     use eventual::Async;
+    use uuid::Uuid;
 
     use std::{thread, net};
     use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
@@ -38,6 +43,8 @@ mod test {
         let response = client.read_ms(foo, 1000).unwrap();
         assert_eq!(response.data, vec![16; 100]);
         client.confirm(response.id).unwrap();
+
+        server.shutdown().await().unwrap();
     }
 
     #[test]
@@ -67,6 +74,38 @@ mod test {
         for response in responses {
             client.confirm(response.id).unwrap();
         }
+
+        server.shutdown().await().unwrap();
+    }
+
+    #[test]
+    fn test_read_confirm_timeout() {
+        let addr = sock();
+        let server = Server::configured(
+            |x| { thread::spawn(x); },
+            EventLoopConfig {
+                io_poll_timeout_ms: 1000,
+                notify_capacity: 4096,
+                messages_per_tick: 256,
+                // Changed to 1 from default 100.
+                timer_tick_ms: 1,
+                timer_wheel_size: 1024,
+                timer_capacity: 65536
+            },
+            128).unwrap();
+        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+
+        let mut client = Client::connect(addr).unwrap();
+
+        let foo = client.create(String::from("foo")).unwrap();
+        client.send(foo.clone(), vec![1; 128]).unwrap();
+        let message = client.read_ms(foo.clone(), 10).unwrap();
+        thread::sleep_ms(20);
+
+        if let ClientError::Requeued = client.confirm(message.id).unwrap_err() {}
+        else { panic!("Confirm sent after timeout elapsed, but data not requeued.") }
+
+        server.shutdown().await().unwrap();
     }
 }
 
