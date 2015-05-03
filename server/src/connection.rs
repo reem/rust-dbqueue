@@ -51,7 +51,7 @@ impl Connection {
             // Chop off the message we just processed.
             self.incoming = self.incoming[message_len as usize..].to_vec();
 
-            let outgoing = Cursor::new(match message {
+            let outgoing = Cursor::new(try!(match message {
                 ClientMessage::CreateQueue(id) => {
                     queues.entry(id)
                         .or_insert_with(|| Queue(Default::default()));
@@ -72,45 +72,12 @@ impl Connection {
                     }).unwrap_or(ServerMessage::NoSuchEntity)
                 },
 
-                ClientMessage::Read(id, timeout) => {
-                    if let Some(queue) = queues.get(&id).cloned() {
-                        let top = queue.borrow_mut().pop_front();
-                        if let Some((uuid, object)) = top {
-                            let (timeout_tx, timeout_rx) = Future::pair();
-                            let (confirm_tx, confirm_rx) = Future::pair();
-                            let (cancellation_tx, cancellation_rx) = Future::pair();
-
-                            try!(evloop.timeout_ms(timeout_tx, timeout));
-
-                            let (cuuid, cobject) = (uuid.clone(), object.clone());
-                            eventual::select((timeout_rx, confirm_rx))
-                                .map(move |(choice, _)| {
-                                    match choice {
-                                        // Timeout expired first.
-                                        0 => queue.borrow_mut().push_front((cuuid, cobject)),
-                                        // Confirm received first.
-                                        1 => cancellation_tx.complete(()),
-                                        x => panic!("Received impossible hint {:?} from select", x)
-                                    }
-                                }).fire();
-
-                            self.unconfirmed.insert(uuid.clone(),
-                                                    (confirm_tx, cancellation_rx));
-
-                            ServerMessage::Read(uuid, object)
-                        } else {
-                            ServerMessage::Empty
-                        }
-                    } else {
-                        ServerMessage::NoSuchEntity
-                    }
-                },
+                ClientMessage::Read(id, timeout) =>
+                    try!(self.read_ms(evloop, queues, id, timeout)),
 
                 ClientMessage::Confirm(uuid) => {
                     self.unconfirmed.remove(&uuid)
                         .map(|(confirm_tx, cancellation_rx)| {
-                            // NOTE: Not racy because single-thread.
-
                             // The timeout has elapsed.
                             if cancellation_rx.is_ready() {
                                 ServerMessage::Requeued
@@ -120,7 +87,7 @@ impl Connection {
                             }
                         }).unwrap_or(ServerMessage::NoSuchEntity)
                 }
-            }.encode().unwrap());
+            }.encode()));
 
             self.outgoing.push_back(outgoing);
         }
@@ -144,6 +111,42 @@ impl Connection {
                 },
                 Ok(_) => continue,
             }
+        }
+    }
+
+    fn read_ms(&mut self, evloop: &mut EventLoop<Handler>,
+               queues: &mut HashMap<String, Queue>,
+               id: String, timeout: u64) -> Result<ServerMessage, Error> {
+        if let Some(queue) = queues.get(&id).cloned() {
+            let top = queue.borrow_mut().pop_front();
+            if let Some((uuid, object)) = top {
+                let (timeout_tx, timeout_rx) = Future::pair();
+                let (confirm_tx, confirm_rx) = Future::pair();
+                let (cancellation_tx, cancellation_rx) = Future::pair();
+
+                try!(evloop.timeout_ms(timeout_tx, timeout));
+
+                let (cuuid, cobject) = (uuid.clone(), object.clone());
+                eventual::select((timeout_rx, confirm_rx))
+                    .map(move |(choice, _)| {
+                        match choice {
+                            // Timeout expired first.
+                            0 => queue.borrow_mut().push_front((cuuid, cobject)),
+                            // Confirm received first.
+                            1 => cancellation_tx.complete(()),
+                            x => panic!("Received impossible hint {:?} from select", x)
+                        }
+                    }).fire();
+
+                self.unconfirmed.insert(uuid.clone(),
+                                        (confirm_tx, cancellation_rx));
+
+                Ok(ServerMessage::Read(uuid, object))
+            } else {
+                Ok(ServerMessage::Empty)
+            }
+        } else {
+            Ok(ServerMessage::NoSuchEntity)
         }
     }
 }

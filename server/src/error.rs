@@ -1,3 +1,4 @@
+use common::EncodingError;
 use mio::TimerError;
 use std::io;
 
@@ -7,6 +8,7 @@ pub enum Error {
     Notify,
     OverLongMessage,
     Timer(TimerError),
+    Encoding(EncodingError),
     Io(io::Error)
 }
 
@@ -19,5 +21,9 @@ impl From<io::Error> for Error {
 
 impl From<TimerError> for Error {
     fn from(err: TimerError) -> Error { Error::Timer(err) }
+}
+
+impl From<EncodingError> for Error {
+    fn from(err: EncodingError) -> Error { Error::Encoding(err) }
 }
 

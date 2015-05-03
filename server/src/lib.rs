@@ -13,6 +13,9 @@ extern crate iobuf;
 extern crate uuid;
 extern crate threadpool;
 
+#[macro_use]
+extern crate log;
+
 pub use error::{Error, Result};
 pub use executor::Executor;
 
@@ -49,7 +52,9 @@ impl Server {
             let (tx, rx) = Future::pair();
 
             exec.run(Box::new(move || {
-                match evloop.run(&mut handler) {
+                let res = evloop.run(&mut handler);
+                drop(handler);
+                match res {
                     Ok(()) => tx.complete(()),
                     Err(e) => tx.fail(Error::from(e))
                 }
