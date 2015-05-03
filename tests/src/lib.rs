@@ -107,5 +107,95 @@ mod test {
 
         server.shutdown().await().unwrap();
     }
+
+    #[test]
+    fn test_request_pipelining() {
+        let requests_phase_1 = [
+            ClientMessage::CreateQueue(String::from("foo")),
+            ClientMessage::Enqueue(String::from("foo"), vec![1; 128]),
+            ClientMessage::Enqueue(String::from("foo"), vec![2; 128]),
+            ClientMessage::Read(String::from("foo"), 1000),
+            ClientMessage::Enqueue(String::from("foo"), vec![3; 128]),
+            ClientMessage::Read(String::from("foo"), 1000),
+            ClientMessage::Read(String::from("foo"), 1000),
+            // We will send Confirm requests once we get the data.
+        ];
+
+        let addr = sock();
+        let server = Server::start(|x| { thread::spawn(x); }).unwrap();
+        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+
+        let mut client = PipelinedClient::connect(addr).unwrap();
+
+        println!("Connected");
+
+        // Send all requests without waiting for responses.
+        for request in &requests_phase_1 {
+            println!("Sending: {:?}", request);
+            client.send(request).unwrap();
+        }
+
+        println!("Sent requests_phase_1");
+
+        let (id1, id2, id3, data1, data2, data3) = {
+            let mut responses = client.iter();
+            assert_eq!(responses.next().unwrap(), ServerMessage::QueueCreated);
+            println!("Received a response.");
+
+            let id1 = unwrap_queued_message(responses.next().unwrap());
+            println!("Received a response.");
+            let id2 = unwrap_queued_message(responses.next().unwrap());
+            println!("Received a response.");
+            let data1 = unwrap_data_message(responses.next().unwrap());
+            println!("Received a response.");
+            let id3 = unwrap_queued_message(responses.next().unwrap());
+            println!("Received a response.");
+            let data2 = unwrap_data_message(responses.next().unwrap());
+            println!("Received a response.");
+            let data3 = unwrap_data_message(responses.next().unwrap());
+
+            println!("Received responses.");
+
+            (id1, id2, id3, data1, data2, data3)
+        };
+
+        println!("Received responses to phase 1");
+
+        assert_eq!(data1, vec![1; 128]);
+        assert_eq!(data2, vec![2; 128]);
+        assert_eq!(data3, vec![3; 128]);
+
+        let requests_phase_2 = [
+            ClientMessage::Confirm(id1),
+            ClientMessage::Confirm(id2),
+            ClientMessage::Confirm(id3),
+        ];
+
+        for request in &requests_phase_2 {
+            client.send(request).unwrap();
+        }
+
+        let mut responses = client.iter();
+
+        assert_eq!(responses.next().unwrap(), ServerMessage::Confirmed);
+        assert_eq!(responses.next().unwrap(), ServerMessage::Confirmed);
+        assert_eq!(responses.next().unwrap(), ServerMessage::Confirmed);
+
+        server.shutdown().await().unwrap();
+    }
+
+    fn unwrap_queued_message(message: ServerMessage) -> Uuid {
+        match message {
+            ServerMessage::ObjectQueued(id) => id,
+            x => panic!("Expected ObjectQueued, received {:?}", x)
+        }
+    }
+
+    fn unwrap_data_message(message: ServerMessage) -> Vec<u8> {
+        match message {
+            ServerMessage::Read(_, data) => data,
+            x => panic!("Expected Read, received {:?}", x)
+        }
+    }
 }
 

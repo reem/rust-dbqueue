@@ -14,7 +14,7 @@ pub const MAX_SERVER_MESSAGE_LEN: u64 = 2048;
 const CLIENT_SIZE_LIMIT: SizeLimit = SizeLimit::Bounded(MAX_CLIENT_MESSAGE_LEN);
 const SERVER_SIZE_LIMIT: SizeLimit = SizeLimit::Bounded(MAX_SERVER_MESSAGE_LEN);
 
-#[derive(Debug, RustcDecodable, RustcEncodable)]
+#[derive(Debug, RustcDecodable, RustcEncodable, PartialEq)]
 pub enum ClientMessage {
     // FIXME: TyOverby/bincode#34
     // These Strings and Vec<u8>s should be RefBox's of str and [u8]
@@ -45,7 +45,7 @@ pub enum ClientMessage {
     Confirm(Uuid)
 }
 
-#[derive(Debug, RustcDecodable, RustcEncodable)]
+#[derive(Debug, RustcDecodable, RustcEncodable, PartialEq)]
 pub enum ServerMessage {
     /// The requested queue was created and is ready to receive messages.
     QueueCreated,
@@ -102,6 +102,11 @@ impl ServerMessage {
     #[inline]
     pub fn decode_from<R: Read>(read: &mut R) -> DecodingResult<(ServerMessage, u64)> {
         bincode::decode_from(read, SERVER_SIZE_LIMIT)
+    }
+
+    #[inline]
+    pub fn decode(data: &[u8]) -> DecodingResult<(ServerMessage, u64)> {
+        bincode::decode(data)
     }
 }
 

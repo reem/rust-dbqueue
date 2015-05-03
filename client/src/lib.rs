@@ -109,9 +109,46 @@ impl<S: Read + Write> Client<S> {
     }
 
     fn send_message(&mut self, message: ClientMessage) -> Result<ServerMessage> {
-        try!(self.pipeline.send(message));
+        try!(self.pipeline.send(&message));
         self.pipeline.receive()
     }
 }
 
+/// An alternative Client which allows pipelining requests.
+///
+/// Requests can be sent using `send`, then responses waited on by
+/// using `iter` and looping over incoming responses.
+// FIXME: Providing a nicer Future-based API is blocked on eventual changes.
+pub struct PipelinedClient<S: Read + Write> {
+    pipeline: Pipeline<S>
+}
+
+impl PipelinedClient<TcpStream> {
+    /// Connect to an existing server, so we can start sending messages.
+    pub fn connect<T: ToSocketAddrs>(addr: T) -> io::Result<PipelinedClient<TcpStream>> {
+        Ok(PipelinedClient::new(try!(TcpStream::connect(addr))))
+    }
+}
+
+impl<S: Read + Write> PipelinedClient<S> {
+    pub fn new(stream: S) -> PipelinedClient<S> {
+        PipelinedClient { pipeline: Pipeline::new(stream) }
+    }
+
+    /// Send a ClientMessage, but do not wait for a response.
+    // NOTE: This API already requires knowledge of the internals
+    // for decoding ServerMessages, so not much harm done by not
+    // providing as many convenience methods.
+    pub fn send(&mut self, message: &ClientMessage) -> Result<()> {
+        self.pipeline.send(message)
+    }
+
+    /// Get an iterator over all incoming responses.
+    ///
+    /// The Responses will be in the same order as the outgoing requests,
+    /// in FIFO (or really FOFI, since we are receiving) order.
+    pub fn iter(&mut self) -> ResponseIter<S> {
+        self.pipeline.iter()
+    }
+}
 
