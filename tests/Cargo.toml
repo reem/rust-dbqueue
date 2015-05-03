@@ -15,4 +15,6 @@ dbqueue-client = { path = "../client" }
 mio = { git = "https://github.com/reem/mio", branch = "nonblock-read-write-impls" }
 eventual = { git = "https://github.com/carllerche/eventual" }
 uuid = "~0.1"
+chrono = "~0.2"
+env_logger = "~0.3"
 

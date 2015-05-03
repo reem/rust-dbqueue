@@ -5,6 +5,7 @@ extern crate dbqueue_common;
 extern crate mio;
 extern crate eventual;
 extern crate uuid;
+extern crate env_logger;
 
 #[cfg(test)]
 mod test {
@@ -17,6 +18,7 @@ mod test {
     use mio::{EventLoopConfig, tcp};
     use eventual::Async;
     use uuid::Uuid;
+    use env_logger;
 
     use std::{thread, net};
     use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
@@ -24,6 +26,8 @@ mod test {
     static PORT: AtomicUsize = ATOMIC_USIZE_INIT;
 
     fn sock() -> net::SocketAddr {
+        let _ = env_logger::init();
+
         let port = 3000 + PORT.fetch_add(1, Ordering::Relaxed) as u16;
         let ip = net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1));
         net::SocketAddr::new(ip, port)

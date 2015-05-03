@@ -82,21 +82,27 @@ impl Handler {
                 let token = self.register(
                     Registration::Connection(Connection::new(connection)));
 
-                // TODO: Error reporter
-                let _ = evloop.register_opt(
+                match evloop.register_opt(
                     self.connection_at(token).connection(),
                     token,
                     Interest::readable() | Interest::writable(),
                     PollOpt::level()
-                );
+                ) {
+                    Ok(()) => {},
+                    Err(e) => {
+                        error!("Error registering new connection: {:?}", e);
+                        self.slab.remove(token);
+                    }
+                }
             },
 
             Ok(None) => {
                 panic!("Handler tried to accept on a blocked acceptor.")
             },
 
-            // TODO: Add an error reporter.
-            Err(_) => {}
+            Err(e) => {
+                error!("Error accepting new connection: {:?}", e);
+            }
         }
     }
 
@@ -105,9 +111,11 @@ impl Handler {
             .ok().expect("No space for a new registration in the handler slab.")
     }
 
-    fn disconnect(&mut self, token: Token) {
-        // Will also close the associated acceptor/connection.
-        self.slab.remove(token);
+    fn disconnect(&mut self, token: Token, evloop: &mut EventLoop<Handler>) {
+        match self.slab.remove(token).unwrap() {
+            Registration::Acceptor(acc) => evloop.deregister(&acc).unwrap(),
+            Registration::Connection(conn) => evloop.deregister(conn.connection()).unwrap(),
+        }
     }
 
     fn acceptor_at(&self, token: Token) -> &NonBlock<TcpListener> {
@@ -140,16 +148,18 @@ impl mio::Handler for Handler {
             &mut Registration::Connection(ref mut conn) =>
                 match conn.readable(&mut self.queues, evloop) {
                     Ok(()) => return,
-                    // TODO: Error Reporter
-                    Err(_) => true
+                    Err(e) => {
+                        error!("Connection readable error: {:?}", e);
+                        true
+                    }
                 },
             _ => false
         };
 
         if next { // A connection hit a fatal error.
-            self.disconnect(token)
+            self.disconnect(token, evloop)
         } else { // An acceptor is ready to accept a new connection.
-            self.accept(evloop, token);
+            self.accept(evloop, token)
         }
     }
 
@@ -171,14 +181,19 @@ impl mio::Handler for Handler {
             },
             Message::Acceptor(acceptor, future) => {
                 let token = self.register(Registration::Acceptor(acceptor));
-                // TODO: Error reporter
-                let _ = evloop.register_opt(
+
+                match evloop.register_opt(
                     self.acceptor_at(token),
                     token,
                     Interest::readable(),
                     PollOpt::level()
-                );
-                future.complete(());
+                ) {
+                    Ok(()) => future.complete(()),
+                    Err(e) => {
+                        self.slab.remove(token);
+                        future.fail(Error::from(e));
+                    }
+                }
             }
         }
     }

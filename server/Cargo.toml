@@ -15,4 +15,5 @@ eventual = { git = "http://github.com/carllerche/eventual" }
 uuid = "~0.1"
 iobuf = "~5"
 threadpool = "~0.1"
+log = "~0.3"
 
