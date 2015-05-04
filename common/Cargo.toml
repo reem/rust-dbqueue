@@ -10,6 +10,6 @@ license = "MIT"
 
 [dependencies]
 rustc-serialize = "~0.3"
-bincode = { git = "https://github.com/reem/bincode", branch = "refbox-enhancements" }
+bincode = { git = "https://github.com/TyOverby/bincode" }
 uuid = "~0.1"
 
