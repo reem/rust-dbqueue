@@ -120,6 +120,11 @@ mod tests {
         if let ClientError::Requeued = client.confirm(message.id).unwrap_err() {}
         else { panic!("Confirm sent after timeout elapsed, but data not requeued.") }
 
+        // After a Requeue, the next message should be the requeued one.
+        let message = client.read_ms(foo.clone(), 100).unwrap();
+        assert_eq!(message.data, vec![1; 128]);
+        client.confirm(message.id).unwrap();
+
         server.shutdown().await().unwrap();
     }
 
