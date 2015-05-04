@@ -51,6 +51,21 @@ On my Mid 2014 Macbook Pro, running OS X 10.10, with a 2.8 Ghz i7, the server
 completes `tests/examples/client.rs` at roughly `25000` request/response pairs
 and validation per second.
 
+To run load tests for a single threaded server, edit the constants in
+`tests/examples/client.rs` to your liking, run `tests/examples/server.rs`
+using `cargo run --release --example=server` from the tests directory
+and then run the client using `cargo run --release --example=client`. It will
+do a relatively naive benchmark and report the number of request/response
+pairs made and the time it took.
+
+The client and server use only one queue, but performance for multiple queues
+is almost identical, since it is not really more expensive to manage multiple
+queues than a single queue.
+
+To run load tests for the multithreaded server and client, do the same as for
+the single threaded server but run the `multiserver` and `multiserver-client`
+examples instead. Take care to run with `--release`.
+
 ## Codebase
 
 There are four crates involved in dbqueue, `dbqueue-server`, `dbqueue-client`,
