@@ -12,14 +12,41 @@ use std::collections::{HashMap, VecDeque};
 
 use {Error};
 
+/// An existing Connection with a single Client.
 pub struct Connection<Q: Queue> {
+    /// The underlying TcpStream.
     connection: NonBlock<TcpStream>,
+
+    /// The current incoming message.
+    ///
+    /// We read out ClientMessages from here.
     incoming: Vec<u8>,
+
+    /// Pending outgoing messages.
     outgoing: VecDeque<Cursor<Vec<u8>>>,
+
+    /// Pending Reads which have yet to be Confirmed.
+    ///
+    /// The keys are the Uuid's of the data which has been read out but
+    /// not confirmed.
+    ///
+    /// Each value contains a Complete which will be completed when we do
+    /// receive a confirm message, and a second cancellation Future which
+    /// will be completed if the timeout on the Read elapsed and the data
+    /// was requeued.
+    ///
+    /// In the event that the queue in question was full when the timeout
+    /// elapsed, the cancellation future will be failed with the queue, the
+    /// id of the data, and the object itself.
+    ///
+    /// If the cancellation future is *aborted* rather than failed, due to
+    /// the cancellation future never being completed or failed, the data
+    /// was requeued succesfully after the timeout elapsed.
     unconfirmed: HashMap<Uuid, (Complete<(), Error>, Future<(), (Q, Uuid, Vec<u8>)>)>
 }
 
 impl<Q: Queue> Connection<Q> {
+    /// Create a new connection from a stream.
     #[inline]
     pub fn new(connection: NonBlock<TcpStream>) -> Connection<Q> {
         Connection {
@@ -36,6 +63,8 @@ impl<Q: Queue> Connection<Q> {
         &self.connection
     }
 
+    /// Handle a readable event on this connection, using the passed queues and
+    /// event loop.
     #[inline]
     pub fn readable<Qu>(&mut self, queues: &Qu, evloop: &mut EventLoop<Handler<Qu>>)
         -> Result<(), Error>
@@ -48,7 +77,8 @@ impl<Q: Queue> Connection<Q> {
 
         // Process 1 or more messages read into the incoming buffer.
         //
-        // Sometimes more than one message will be transferred.
+        // Under request pipelining, we may be able to handle many messages
+        // at once.
         while let Ok((message, message_len)) =
                 ClientMessage::<'static>::decode(&self.incoming) {
             // Chop off the message we just processed.
@@ -94,6 +124,7 @@ impl<Q: Queue> Connection<Q> {
         }
     }
 
+    /// Handle a writable event on this connection.
     #[inline]
     pub fn writable(&mut self) {
         while self.outgoing.len() != 0 {
@@ -108,6 +139,8 @@ impl<Q: Queue> Connection<Q> {
         }
     }
 
+    /// Handle a read request from a client, including setting up our timeout
+    /// confirm and cancellation futures for handling Confirm requests.
     fn read_ms<Qu>(&mut self, evloop: &mut EventLoop<Handler<Qu>>,
                   queues: &Qu, id: &str, timeout: u64) -> Result<ServerMessage, Error>
     where Qu: Queues<Queue=Q> + Send {
@@ -149,6 +182,7 @@ impl<Q: Queue> Connection<Q> {
         }
     }
 
+    /// Handle a Confirm request, using the unconfirmed map.
     fn confirm(&mut self, uuid: &Uuid) -> ServerMessage {
         self.unconfirmed.remove(uuid)
             .map(|(confirm_tx, cancellation_rx)| {
@@ -156,6 +190,7 @@ impl<Q: Queue> Connection<Q> {
                     // The timeout has elapsed and data succesfully
                     // requeued.
                     Ok(Ok(())) => ServerMessage::Requeued,
+                    Ok(Err(AsyncError::Aborted)) => ServerMessage::Requeued,
 
                     // The timeout has elapsed, but the data was not
                     // succesfully requeued.
@@ -168,7 +203,6 @@ impl<Q: Queue> Connection<Q> {
                             }
                         }
                     },
-                    Ok(_) => { ServerMessage::Requeued }
                     Err(_) => {
                         confirm_tx.complete(());
                         ServerMessage::Confirmed
