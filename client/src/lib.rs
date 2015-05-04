@@ -12,7 +12,7 @@ pub use common::{EncodingError, DecodingError};
 pub use error::{Error, Result};
 pub use pipeline::{Pipeline, ResponseIter};
 
-use common::{ClientMessage, ServerMessage};
+use common::{ClientMessage, ServerMessage, StrBox, SliceBox};
 
 use uuid::Uuid;
 use std::net::{ToSocketAddrs, TcpStream};
@@ -31,11 +31,16 @@ pub struct Message {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub struct QueueId(String);
+pub struct QueueId<'a>(StrBox<'a>);
 
-impl From<String> for QueueId {
+impl From<String> for QueueId<'static> {
     /// Construct a new QueueId from the queue name.
-    fn from(name: String) -> QueueId { QueueId(name) }
+    fn from(name: String) -> QueueId<'static> { QueueId(StrBox::boxed(name)) }
+}
+
+impl<'a> From<&'a str> for QueueId<'a> {
+    /// Construct a new QueueId from the queue name.
+    fn from(name: &'a str) -> QueueId<'a> { QueueId(StrBox::new(name)) }
 }
 
 impl Client {
@@ -52,8 +57,8 @@ impl<S: Read + Write> Client<S> {
     }
 
     /// Create a new queue.
-    pub fn create(&mut self, queue_name: String) -> Result<QueueId> {
-        match try!(self.send_message(ClientMessage::CreateQueue(queue_name.clone()))) {
+    pub fn create<'a>(&mut self, queue_name: &'a str) -> Result<QueueId<'a>> {
+        match try!(self.send_message(ClientMessage::CreateQueue(StrBox::new(queue_name)))) {
             ServerMessage::QueueCreated => Ok(QueueId::from(queue_name)),
             _ => panic!("Received incorrect message from the server.")
         }
@@ -63,17 +68,22 @@ impl<S: Read + Write> Client<S> {
     pub fn delete(&mut self, queue: QueueId) -> Result<()> {
         match try!(self.send_message(ClientMessage::DeleteQueue(queue.0.clone()))) {
             ServerMessage::QueueDeleted => Ok(()),
-            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
+            ServerMessage::NoSuchEntity =>
+                Err(Error::NoQueue(QueueId(queue.0.to_owned()))),
             _ => panic!("Received incorrect message from the server.")
         }
     }
 
     /// Send an object to an existing queue on the server.
-    pub fn send(&mut self, queue: QueueId, data: Vec<u8>) -> Result<Uuid> {
-        match try!(self.send_message(ClientMessage::Enqueue(queue.0.clone(), data))) {
+    pub fn send(&mut self, queue: QueueId, data: &[u8]) -> Result<Uuid> {
+        let message = ClientMessage::Enqueue(queue.0.clone(), SliceBox::new(data));
+        let response = try!(self.send_message(message));
+
+        match response {
             ServerMessage::ObjectQueued(id) => Ok(id),
-            ServerMessage::Full(id, data) => Err(Error::Full(id, data)),
-            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
+            ServerMessage::Full(id, data) => Err(Error::Full(id, data.take())),
+            ServerMessage::NoSuchEntity =>
+                Err(Error::NoQueue(QueueId(queue.0.to_owned()))),
             _ => panic!("Received incorrect message from the server.")
         }
     }
@@ -87,11 +97,11 @@ impl<S: Read + Write> Client<S> {
     /// Timeouts are given in milliseconds. A timeout of 0 indicates no timeout.
     pub fn read_ms(&mut self, queue: QueueId, timeout: u64) -> Result<Message> {
         match try!(self.send_message(ClientMessage::Read(queue.0.clone(), timeout))) {
-            ServerMessage::Read(id, data) => {
-                Ok(Message { id: id, data: data })
-            },
+            ServerMessage::Read(id, data) =>
+                Ok(Message { id: id, data: data.take() }),
             ServerMessage::Empty => Err(Error::Empty),
-            ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
+            ServerMessage::NoSuchEntity =>
+                Err(Error::NoQueue(QueueId(queue.0.to_owned()))),
             _ => panic!("Received incorrect message from the server.")
         }
     }
@@ -104,13 +114,13 @@ impl<S: Read + Write> Client<S> {
         match try!(self.send_message(ClientMessage::Confirm(entity_id))) {
             ServerMessage::Confirmed => Ok(()),
             ServerMessage::Requeued => Err(Error::Requeued),
-            ServerMessage::Full(id, data) => Err(Error::Full(id, data)),
+            ServerMessage::Full(id, data) => Err(Error::Full(id, data.take())),
             ServerMessage::NoSuchEntity => Err(Error::NoObject(entity_id)),
             _ => panic!("Received incorrect message from the server.")
         }
     }
 
-    fn send_message(&mut self, message: ClientMessage) -> Result<ServerMessage> {
+    fn send_message(&mut self, message: ClientMessage) -> Result<ServerMessage<'static>> {
         try!(self.pipeline.send(&message));
         self.pipeline.receive()
     }

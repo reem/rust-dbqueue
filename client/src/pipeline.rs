@@ -24,7 +24,7 @@ impl<S: Read + Write> Pipeline<S> {
 
     pub fn incoming(&self) -> u32 { self.expecting }
 
-    pub fn receive(&mut self) -> Result<ServerMessage> {
+    pub fn receive(&mut self) -> Result<ServerMessage<'static>> {
         if self.expecting == 0 {
             Err(Error::NoResponseExpected)
         } else {
@@ -44,9 +44,9 @@ pub struct ResponseIter<'a, S: Read + Write + 'a> {
 }
 
 impl<'a, S: Read + Write> Iterator for ResponseIter<'a, S> {
-    type Item = ServerMessage;
+    type Item = ServerMessage<'static>;
 
-    fn next(&mut self) -> Option<ServerMessage> {
+    fn next(&mut self) -> Option<ServerMessage<'static>> {
         if self.parent.expecting == 0 {
             None
         } else {
