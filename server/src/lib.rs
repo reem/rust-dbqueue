@@ -12,21 +12,27 @@ extern crate mio;
 extern crate iobuf;
 extern crate uuid;
 extern crate threadpool;
+extern crate comm;
 
 #[macro_use]
 extern crate log;
 
 pub use error::{Error, Result};
 pub use executor::Executor;
+pub use queue::{Queue, Queues};
+pub use queue::concurrent::{ConcurrentQueue, ConcurrentQueues};
 
 use mio::NonBlock;
 use std::net::TcpListener;
 use eventual::Future;
 
+use queue::rcqueue::RcQueues;
+
 mod error;
 mod rt;
 mod executor;
 mod connection;
+mod queue;
 
 pub struct Server {
     notify: mio::Sender<rt::Message>,
@@ -43,8 +49,18 @@ impl Server {
     pub fn configured<E>(exec: E, config: mio::EventLoopConfig,
                          slab_size: usize) -> Result<Server>
     where E: Executor {
+        let rcqueues: RcQueues = Default::default();
+        Server::with_queues(exec, config, slab_size, rcqueues)
+    }
+
+    /// Create a server using a specific event loop configuration,
+    /// sharing an existing set of Queues, which may also be given
+    /// to other Servers.
+    pub fn with_queues<E, Q>(exec: E, config: mio::EventLoopConfig,
+                             slab_size: usize, queues: Q) -> Result<Server>
+    where E: Executor, Q: Queues {
          let mut evloop = try!(mio::EventLoop::configured(config));
-         let mut handler = rt::Handler::new(slab_size);
+         let mut handler = rt::Handler::new(slab_size, queues);
          let notify = evloop.channel();
 
          let shutdown = {

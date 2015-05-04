@@ -1,40 +1,13 @@
-use std::collections::{VecDeque, HashMap};
 use std::net::TcpListener;
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::ops;
 
 use mio::{self, EventLoop, Token, ReadHint, Interest, PollOpt, NonBlock};
 use mio::util::Slab;
 
 use eventual::Complete;
 
-use uuid::Uuid;
-
+use queue::{Queue, Queues};
 use connection::Connection;
 use {Error};
-
-/// Since we are single threaded, we can get away with the vast majority
-/// of synchronization overhead and use a simple ring buffer for our queue.
-///
-/// We need shared ownership via Rc and RefCell to make handling of
-/// re-queueing much simpler, as we can capture a queue.
-///
-/// If we were mulithreaded a lock free multiple producer multiple consumer
-/// queue would be appropriate.
-#[derive(Clone, Debug)]
-pub struct Queue(pub Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>>);
-
-// To work around hopefully temporarily limitations in eventual,
-// we have to lie to the compiler about being Send.
-//
-// This is safe in our program because we are single threaded.
-unsafe impl Send for Queue { }
-
-impl ops::Deref for Queue {
-    type Target = Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>>;
-    fn deref(&self) -> &Rc<RefCell<VecDeque<(Uuid, Vec<u8>)>>> { &self.0 }
-}
 
 /// Messages sent from the Server handle to the actual event loop,
 /// through the event loop's notify queue.
@@ -46,21 +19,21 @@ pub enum Message {
     Acceptor(NonBlock<TcpListener>, Complete<(), Error>)
 }
 
-pub struct Handler {
-    slab: Slab<Registration>,
-    queues: HashMap<String, Queue>
+pub struct Handler<Q: Queues> {
+    slab: Slab<Registration<Q::Queue>>,
+    queues: Q
 }
 
-enum Registration {
+enum Registration<Q: Queue> {
     Acceptor(NonBlock<TcpListener>),
-    Connection(Connection)
+    Connection(Connection<Q>)
 }
 
-impl Handler {
-    pub fn new(capacity: usize) -> Handler {
+impl<Q: Queues + Send> Handler<Q> {
+    pub fn new(capacity: usize, queues: Q) -> Handler<Q> {
         Handler {
             slab: Slab::new(capacity),
-            queues: HashMap::new()
+            queues: queues
         }
     }
 
@@ -68,7 +41,7 @@ impl Handler {
     // and Acceptor, which means we can't pass both as arguments and instead have to
     // just pass the Handler/Slab.
     #[inline]
-    fn accept(&mut self, evloop: &mut EventLoop<Handler>, token: Token) {
+    fn accept(&mut self, evloop: &mut EventLoop<Handler<Q>>, token: Token) {
         let connection = {
             if let &mut Registration::Acceptor(ref mut acceptor) = &mut self.slab[token] {
                 acceptor.accept()
@@ -107,12 +80,12 @@ impl Handler {
         }
     }
 
-    fn register(&mut self, registration: Registration) -> Token {
+    fn register(&mut self, registration: Registration<Q::Queue>) -> Token {
         self.slab.insert(registration)
             .ok().expect("No space for a new registration in the handler slab.")
     }
 
-    fn disconnect(&mut self, token: Token, evloop: &mut EventLoop<Handler>) {
+    fn disconnect(&mut self, token: Token, evloop: &mut EventLoop<Handler<Q>>) {
         match self.slab.remove(token).unwrap() {
             Registration::Acceptor(acc) => evloop.deregister(&acc).unwrap(),
             Registration::Connection(conn) => evloop.deregister(conn.connection()).unwrap(),
@@ -126,7 +99,7 @@ impl Handler {
         }
     }
 
-    fn connection_at(&self, token: Token) -> &Connection {
+    fn connection_at(&self, token: Token) -> &Connection<Q::Queue> {
         match &self.slab[token] {
             &Registration::Connection(ref conn) => conn,
             _ => panic!("Expected connection, found acceptor.")
@@ -134,11 +107,11 @@ impl Handler {
     }
 }
 
-impl mio::Handler for Handler {
+impl<Q: Queues + Send> mio::Handler for Handler<Q> {
     type Message = Message;
     type Timeout = Complete<(), Error>;
 
-    fn readable(&mut self, evloop: &mut EventLoop<Handler>,
+    fn readable(&mut self, evloop: &mut EventLoop<Handler<Q>>,
                 token: Token, _: ReadHint) {
         if !self.slab.contains(token) { return }
 
@@ -164,7 +137,7 @@ impl mio::Handler for Handler {
         }
     }
 
-    fn writable(&mut self, _: &mut EventLoop<Handler>,
+    fn writable(&mut self, _: &mut EventLoop<Handler<Q>>,
                  token: Token) {
         if !self.slab.contains(token) { return }
 
@@ -174,7 +147,7 @@ impl mio::Handler for Handler {
         }
     }
 
-    fn notify(&mut self, evloop: &mut EventLoop<Handler>, message: Message) {
+    fn notify(&mut self, evloop: &mut EventLoop<Handler<Q>>, message: Message) {
         match message {
             Message::Shutdown => {
                 // Will trigger the shutdown future to complete.
@@ -199,7 +172,7 @@ impl mio::Handler for Handler {
         }
     }
 
-    fn timeout(&mut self, _: &mut EventLoop<Handler>, future: Complete<(), Error>) {
+    fn timeout(&mut self, _: &mut EventLoop<Handler<Q>>, future: Complete<(), Error>) {
         future.complete(());
     }
 }

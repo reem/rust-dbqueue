@@ -72,6 +72,7 @@ impl<S: Read + Write> Client<S> {
     pub fn send(&mut self, queue: QueueId, data: Vec<u8>) -> Result<Uuid> {
         match try!(self.send_message(ClientMessage::Enqueue(queue.0.clone(), data))) {
             ServerMessage::ObjectQueued(id) => Ok(id),
+            ServerMessage::Full(id, data) => Err(Error::Full(id, data)),
             ServerMessage::NoSuchEntity => Err(Error::NoQueue(queue)),
             _ => panic!("Received incorrect message from the server.")
         }
@@ -103,6 +104,7 @@ impl<S: Read + Write> Client<S> {
         match try!(self.send_message(ClientMessage::Confirm(entity_id))) {
             ServerMessage::Confirmed => Ok(()),
             ServerMessage::Requeued => Err(Error::Requeued),
+            ServerMessage::Full(id, data) => Err(Error::Full(id, data)),
             ServerMessage::NoSuchEntity => Err(Error::NoObject(entity_id)),
             _ => panic!("Received incorrect message from the server.")
         }

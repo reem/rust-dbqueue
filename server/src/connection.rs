@@ -1,9 +1,10 @@
 use mio::{EventLoop, NonBlock};
-use eventual::{self, Future, Async, Complete};
+use eventual::{self, Future, Async, Complete, AsyncError};
 use uuid::Uuid;
 
 use common::{ClientMessage, ServerMessage, MAX_CLIENT_MESSAGE_LEN};
-use rt::{Handler, Queue};
+use rt::Handler;
+use queue::{Queue, Queues};
 
 use std::net::TcpStream;
 use std::io::{self, Cursor, ErrorKind};
@@ -11,16 +12,16 @@ use std::collections::{HashMap, VecDeque};
 
 use {Error};
 
-pub struct Connection {
+pub struct Connection<Q: Queue> {
     connection: NonBlock<TcpStream>,
     incoming: Vec<u8>,
     outgoing: VecDeque<Cursor<Vec<u8>>>,
-    unconfirmed: HashMap<Uuid, (Complete<(), Error>, Future<(), Error>)>
+    unconfirmed: HashMap<Uuid, (Complete<(), Error>, Future<(), (Q, Uuid, Vec<u8>)>)>
 }
 
-impl Connection {
+impl<Q: Queue> Connection<Q> {
     #[inline]
-    pub fn new(connection: NonBlock<TcpStream>) -> Connection {
+    pub fn new(connection: NonBlock<TcpStream>) -> Connection<Q> {
         Connection {
             connection: connection,
             incoming: Vec::new(),
@@ -36,8 +37,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn readable(&mut self, queues: &mut HashMap<String, Queue>,
-                    evloop: &mut EventLoop<Handler>) -> Result<(), Error> {
+    pub fn readable<Qu>(&mut self, queues: &Qu, evloop: &mut EventLoop<Handler<Qu>>)
+        -> Result<(), Error>
+    where Qu: Queues<Queue=Q> + Send {
         match io::copy(&mut self.connection, &mut self.incoming) {
             Ok(_) => {},
             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {},
@@ -53,8 +55,7 @@ impl Connection {
 
             let outgoing = Cursor::new(try!(match message {
                 ClientMessage::CreateQueue(id) => {
-                    queues.entry(id)
-                        .or_insert_with(|| Queue(Default::default()));
+                    queues.insert(id);
                     ServerMessage::QueueCreated
                 },
 
@@ -66,27 +67,18 @@ impl Connection {
 
                 ClientMessage::Enqueue(id, object) => {
                     let uuid = Uuid::new_v4();
-                    queues.get(&id).map(|queue| {
-                        queue.borrow_mut().push_back((uuid.clone(), object));
-                        ServerMessage::ObjectQueued(uuid)
+                    queues.queue(&id).map(|queue| {
+                        match queue.enqueue(uuid.clone(), object) {
+                            Ok(()) => ServerMessage::ObjectQueued(uuid),
+                            Err((uuid, data)) => ServerMessage::Full(uuid, data)
+                        }
                     }).unwrap_or(ServerMessage::NoSuchEntity)
                 },
 
                 ClientMessage::Read(id, timeout) =>
                     try!(self.read_ms(evloop, queues, id, timeout)),
 
-                ClientMessage::Confirm(uuid) => {
-                    self.unconfirmed.remove(&uuid)
-                        .map(|(confirm_tx, cancellation_rx)| {
-                            // The timeout has elapsed.
-                            if cancellation_rx.is_ready() {
-                                ServerMessage::Requeued
-                            } else {
-                                confirm_tx.complete(());
-                                ServerMessage::Confirmed
-                            }
-                        }).unwrap_or(ServerMessage::NoSuchEntity)
-                }
+                ClientMessage::Confirm(uuid) => self.confirm(&uuid)
             }.encode()));
 
             self.outgoing.push_back(outgoing);
@@ -114,11 +106,11 @@ impl Connection {
         }
     }
 
-    fn read_ms(&mut self, evloop: &mut EventLoop<Handler>,
-               queues: &mut HashMap<String, Queue>,
-               id: String, timeout: u64) -> Result<ServerMessage, Error> {
-        if let Some(queue) = queues.get(&id).cloned() {
-            let top = queue.borrow_mut().pop_front();
+    fn read_ms<Qu>(&mut self, evloop: &mut EventLoop<Handler<Qu>>,
+                  queues: &Qu, id: String, timeout: u64) -> Result<ServerMessage, Error>
+    where Qu: Queues<Queue=Q> + Send {
+        if let Some(queue) = queues.queue(&id) {
+            let top = queue.dequeue();
             if let Some((uuid, object)) = top {
                 let (timeout_tx, timeout_rx) = Future::pair();
                 let (confirm_tx, confirm_rx) = Future::pair();
@@ -131,7 +123,12 @@ impl Connection {
                     .map(move |(choice, _)| {
                         match choice {
                             // Timeout expired first.
-                            0 => queue.borrow_mut().push_front((cuuid, cobject)),
+                            0 => match queue.requeue(cuuid, cobject) {
+                                Ok(()) => {},
+                                Err((id, data)) => {
+                                    cancellation_tx.fail((queue, id, data))
+                                }
+                            },
                             // Confirm received first.
                             1 => cancellation_tx.complete(()),
                             x => panic!("Received impossible hint {:?} from select", x)
@@ -148,6 +145,34 @@ impl Connection {
         } else {
             Ok(ServerMessage::NoSuchEntity)
         }
+    }
+
+    fn confirm(&mut self, uuid: &Uuid) -> ServerMessage {
+        self.unconfirmed.remove(uuid)
+            .map(|(confirm_tx, cancellation_rx)| {
+                match cancellation_rx.poll() {
+                    // The timeout has elapsed and data succesfully
+                    // requeued.
+                    Ok(Ok(())) => ServerMessage::Requeued,
+
+                    // The timeout has elapsed, but the data was not
+                    // succesfully requeued.
+                    Ok(Err(AsyncError::Failed((queue, id, data)))) => {
+                        // Try to queue again now.
+                        match queue.requeue(id, data) {
+                            Ok(()) => ServerMessage::Requeued,
+                            Err((id, data)) => {
+                                ServerMessage::Full(id, data)
+                            }
+                        }
+                    },
+                    Ok(_) => { ServerMessage::Requeued }
+                    Err(_) => {
+                        confirm_tx.complete(());
+                        ServerMessage::Confirmed
+                    }
+                }
+            }).unwrap_or(ServerMessage::NoSuchEntity)
     }
 }
 

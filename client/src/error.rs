@@ -12,6 +12,7 @@ pub enum Error {
     NoObject(Uuid),
     Requeued,
     Empty,
+    Full(Uuid, Vec<u8>),
     NoResponseExpected,
     Io(io::Error)
 }
