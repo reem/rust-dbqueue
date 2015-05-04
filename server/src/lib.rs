@@ -43,8 +43,7 @@ impl Server {
     pub fn configured<E>(exec: E, config: mio::EventLoopConfig,
                          slab_size: usize) -> Result<Server>
     where E: Executor {
-         // TODO: Convert to try! by adding From impl
-         let mut evloop = mio::EventLoop::configured(config).unwrap();
+         let mut evloop = try!(mio::EventLoop::configured(config));
          let mut handler = rt::Handler::new(slab_size);
          let notify = evloop.channel();
 
