@@ -15,7 +15,7 @@ mod test {
 
     use dbqueue_client::Error as ClientError;
 
-    use mio::{EventLoopConfig, tcp};
+    use mio::{EventLoopConfig, NonBlock, Socket, tcp};
     use eventual::Async;
     use uuid::Uuid;
     use env_logger;
@@ -33,11 +33,18 @@ mod test {
         net::SocketAddr::new(ip, port)
     }
 
+    fn listener(addr: &net::SocketAddr) -> NonBlock<net::TcpListener> {
+        let socket = tcp::v4().unwrap();
+        socket.set_reuseport(true).unwrap();
+        socket.bind(addr).unwrap();
+        socket.listen(1024).unwrap()
+    }
+
     #[test]
     fn test_single_create_send_read_confirm() {
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
-        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+        server.listen(listener(&addr)).await().unwrap();
 
         let mut client = Client::connect(addr).unwrap();
 
@@ -57,7 +64,7 @@ mod test {
 
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
-        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+        server.listen(listener(&addr)).await().unwrap();
 
         let mut client = Client::connect(addr).unwrap();
 
@@ -97,7 +104,7 @@ mod test {
                 timer_capacity: 65536
             },
             128).unwrap();
-        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+        server.listen(listener(&addr)).await().unwrap();
 
         let mut client = Client::connect(addr).unwrap();
 
@@ -127,7 +134,7 @@ mod test {
 
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
-        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+        server.listen(listener(&addr)).await().unwrap();
 
         let mut client = PipelinedClient::connect(addr).unwrap();
 
@@ -192,7 +199,7 @@ mod test {
     fn test_heavy_request_pipelining() {
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
-        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+        server.listen(listener(&addr)).await().unwrap();
 
         let mut client = Client::connect(&addr).unwrap();
         client.create(String::from("foo")).unwrap();
