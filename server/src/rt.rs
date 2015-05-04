@@ -5,7 +5,7 @@ use mio::util::Slab;
 
 use eventual::Complete;
 
-use queue::Queues;
+use queue::{Queue, Queues};
 use connection::Connection;
 use {Error};
 
@@ -20,13 +20,13 @@ pub enum Message {
 }
 
 pub struct Handler<Q: Queues> {
-    slab: Slab<Registration>,
+    slab: Slab<Registration<Q::Queue>>,
     queues: Q
 }
 
-enum Registration {
+enum Registration<Q: Queue> {
     Acceptor(NonBlock<TcpListener>),
-    Connection(Connection)
+    Connection(Connection<Q>)
 }
 
 impl<Q: Queues + Send> Handler<Q> {
@@ -80,7 +80,7 @@ impl<Q: Queues + Send> Handler<Q> {
         }
     }
 
-    fn register(&mut self, registration: Registration) -> Token {
+    fn register(&mut self, registration: Registration<Q::Queue>) -> Token {
         self.slab.insert(registration)
             .ok().expect("No space for a new registration in the handler slab.")
     }
@@ -99,7 +99,7 @@ impl<Q: Queues + Send> Handler<Q> {
         }
     }
 
-    fn connection_at(&self, token: Token) -> &Connection {
+    fn connection_at(&self, token: Token) -> &Connection<Q::Queue> {
         match &self.slab[token] {
             &Registration::Connection(ref conn) => conn,
             _ => panic!("Expected connection, found acceptor.")

@@ -12,6 +12,7 @@ extern crate mio;
 extern crate iobuf;
 extern crate uuid;
 extern crate threadpool;
+extern crate comm;
 
 #[macro_use]
 extern crate log;
@@ -19,6 +20,7 @@ extern crate log;
 pub use error::{Error, Result};
 pub use executor::Executor;
 pub use queue::{Queue, Queues};
+pub use queue::concurrent::{ConcurrentQueue, ConcurrentQueues};
 
 use mio::NonBlock;
 use std::net::TcpListener;

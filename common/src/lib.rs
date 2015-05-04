@@ -69,6 +69,9 @@ pub enum ServerMessage {
     /// The Confirm message was not received in time, and the data was requeued.
     Requeued,
 
+    /// Attempted to queue or re-queue, but the queue was full.
+    Full(Uuid, Vec<u8>),
+
     /// A Read was requested on a queue with no data.
     Empty,
 
