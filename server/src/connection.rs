@@ -166,7 +166,7 @@ impl<Q: Queue> Connection<Q> {
                             }
                         }
                     },
-                    Ok(_) => { panic!("Unexpected cancellation abort.") }
+                    Ok(_) => { ServerMessage::Requeued }
                     Err(_) => {
                         confirm_tx.complete(());
                         ServerMessage::Confirmed
