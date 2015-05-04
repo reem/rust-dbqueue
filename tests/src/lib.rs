@@ -14,7 +14,7 @@ extern crate test;
 mod tests {
     use dbqueue_server::{Server};
     use dbqueue_client::{Client, Message, PipelinedClient};
-    use dbqueue_common::{ClientMessage, ServerMessage};
+    use dbqueue_common::{ClientMessage, ServerMessage, StrBox, SliceBox};
 
     use dbqueue_client::Error as ClientError;
 
@@ -52,11 +52,11 @@ mod tests {
 
         let mut client = Client::connect(addr).unwrap();
 
-        let foo = client.create(String::from("foo")).unwrap();
-        client.send(foo.clone(), vec![16; 100]).unwrap();
+        let foo = client.create("foo").unwrap();
+        client.send(foo.clone(), &[16; 100]).unwrap();
 
         let response = client.read_ms(foo, 1000).unwrap();
-        assert_eq!(response.data, vec![16; 100]);
+        assert_eq!(&*response.data, [16; 100].as_ref());
         client.confirm(response.id).unwrap();
 
         server.shutdown().await().unwrap();
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_multiple_items_in_one_queue() {
-        let data = [vec![56; 200], vec![243;200], vec![78;200]];
+        let data: [&[u8]; 3] = [&[56; 200], &[243;200], &[78;200]];
 
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
@@ -72,10 +72,10 @@ mod tests {
 
         let mut client = Client::connect(addr).unwrap();
 
-        let foo = client.create(String::from("foo")).unwrap();
+        let foo = client.create("foo").unwrap();
 
         for datum in &data {
-            client.send(foo.clone(), datum.clone()).unwrap();
+            client.send(foo.clone(), datum.as_ref()).unwrap();
         }
 
         let responses = (0..data.len()).map(|_| {
@@ -83,7 +83,7 @@ mod tests {
         }).collect::<Vec<Message>>();
 
         for (response, data) in responses.iter().zip(data.iter()) {
-            assert_eq!(&response.data, &*data);
+            assert_eq!(&*response.data, *data);
         }
 
         for response in responses {
@@ -112,8 +112,10 @@ mod tests {
 
         let mut client = Client::connect(addr).unwrap();
 
-        let foo = client.create(String::from("foo")).unwrap();
-        client.send(foo.clone(), vec![1; 128]).unwrap();
+        let data: &[u8] = &[1; 128];
+
+        let foo = client.create("foo").unwrap();
+        client.send(foo.clone(), data).unwrap();
         let message = client.read_ms(foo.clone(), 10).unwrap();
         thread::sleep_ms(20);
 
@@ -122,7 +124,7 @@ mod tests {
 
         // After a Requeue, the next message should be the requeued one.
         let message = client.read_ms(foo.clone(), 100).unwrap();
-        assert_eq!(message.data, vec![1; 128]);
+        assert_eq!(message.data, data);
         client.confirm(message.id).unwrap();
 
         server.shutdown().await().unwrap();
@@ -130,14 +132,16 @@ mod tests {
 
     #[test]
     fn test_request_pipelining() {
+        let data: [&[u8]; 3] = [&[1; 128], &[2; 128], &[3; 128]];
+
         let requests_phase_1 = [
-            ClientMessage::CreateQueue(String::from("foo")),
-            ClientMessage::Enqueue(String::from("foo"), vec![1; 128]),
-            ClientMessage::Enqueue(String::from("foo"), vec![2; 128]),
-            ClientMessage::Read(String::from("foo"), 1000),
-            ClientMessage::Enqueue(String::from("foo"), vec![3; 128]),
-            ClientMessage::Read(String::from("foo"), 1000),
-            ClientMessage::Read(String::from("foo"), 1000),
+            ClientMessage::CreateQueue(StrBox::new("foo")),
+            ClientMessage::Enqueue(StrBox::new("foo"), SliceBox::new(data[0])),
+            ClientMessage::Enqueue(StrBox::new("foo"), SliceBox::new(data[1])),
+            ClientMessage::Read(StrBox::new("foo"), 1000),
+            ClientMessage::Enqueue(StrBox::new("foo"), SliceBox::new(data[2])),
+            ClientMessage::Read(StrBox::new("foo"), 1000),
+            ClientMessage::Read(StrBox::new("foo"), 1000),
             // We will send Confirm requests once we get the data.
         ];
 
@@ -163,13 +167,12 @@ mod tests {
             let data2 = unwrap_data_message(responses.next().unwrap()).1;
             let data3 = unwrap_data_message(responses.next().unwrap()).1;
 
-
             (id1, id2, id3, data1, data2, data3)
         };
 
-        assert_eq!(data1, vec![1; 128]);
-        assert_eq!(data2, vec![2; 128]);
-        assert_eq!(data3, vec![3; 128]);
+        assert_eq!(&*data1, data[0]);
+        assert_eq!(&*data2, data[1]);
+        assert_eq!(&*data3, data[2]);
 
         let requests_phase_2 = [
             ClientMessage::Confirm(id1),
@@ -190,16 +193,16 @@ mod tests {
         server.shutdown().await().unwrap();
     }
 
-    fn unwrap_queued_message(message: ServerMessage) -> Uuid {
+    fn unwrap_queued_message(message: ServerMessage<'static>) -> Uuid {
         match message {
             ServerMessage::ObjectQueued(id) => id,
             x => panic!("Expected ObjectQueued, received {:?}", x)
         }
     }
 
-    fn unwrap_data_message(message: ServerMessage) -> (Uuid, Vec<u8>) {
+    fn unwrap_data_message(message: ServerMessage<'static>) -> (Uuid, Vec<u8>) {
         match message {
-            ServerMessage::Read(id, data) => (id, data),
+            ServerMessage::Read(id, data) => (id, data.take()),
             x => panic!("Expected Read, received {:?}", x)
         }
     }
@@ -211,14 +214,15 @@ mod tests {
         server.listen(listener(&addr)).await().unwrap();
 
         let mut client = Client::connect(&addr).unwrap();
-        client.create(String::from("foo")).unwrap();
+        client.create("foo").unwrap();
 
         let mut pipelined = PipelinedClient::connect(&addr).unwrap();
 
         b.iter(|| {
             for i in (0..32) {
                 pipelined
-                    .send(&ClientMessage::Enqueue(String::from("foo"), vec![i; 256]))
+                    .send(&ClientMessage::Enqueue(StrBox::new("foo"),
+                                                  SliceBox::new(&[i; 256])))
                     .unwrap();
             }
 
@@ -226,14 +230,14 @@ mod tests {
                 unwrap_queued_message(response);
             }
 
-            let message = ClientMessage::Read(String::from("foo"), 1000);
+            let message = ClientMessage::Read(StrBox::new("foo"), 1000);
             for _ in (0..32) {
                 pipelined.send(&message).unwrap();
             }
 
             let ids = pipelined.iter().map(unwrap_data_message).enumerate()
                 .map(|(index, (id, data))| {
-                    assert_eq!(data, vec![index as u8; 256]);
+                    assert_eq!(&*data, [index as u8; 256].as_ref());
                     id
                 }).collect::<Vec<_>>();
 

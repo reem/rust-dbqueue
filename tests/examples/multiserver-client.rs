@@ -7,7 +7,7 @@ extern crate chrono;
 extern crate env_logger;
 
 use dbqueue_client::{Client, PipelinedClient};
-use dbqueue_common::{ClientMessage, ServerMessage};
+use dbqueue_common::{ClientMessage, ServerMessage, StrBox, SliceBox};
 
 use std::thread::{self, JoinHandle};
 use std::net::{self, TcpStream};
@@ -26,7 +26,7 @@ fn main() {
     env_logger::init().unwrap();
 
     let mut client = Client::connect("127.0.0.1:3000").unwrap();
-    client.create(String::from("foo")).unwrap();
+    client.create("foo").unwrap();
 
     let mut clients = vec![];
 
@@ -48,8 +48,9 @@ fn main() {
 
 fn do_work(clients: &mut Vec<PipelinedClient<TcpStream>>) {
     let mut handles = spawn_group(move |client| {
+        let data: &[u8] = &[1; 128];
         for _ in 0..PIPELINE {
-            client.send(&ClientMessage::Enqueue(String::from("foo"), vec![1; 128]))
+            client.send(&ClientMessage::Enqueue(StrBox::new("foo"), SliceBox::new(data)))
                 .unwrap();
         }
 
@@ -65,7 +66,7 @@ fn do_work(clients: &mut Vec<PipelinedClient<TcpStream>>) {
 
     handles.extend(spawn_group(move |client| {
         for _ in 0..PIPELINE {
-            client.send(&ClientMessage::Read(String::from("foo"), 1000)).unwrap();
+            client.send(&ClientMessage::Read(StrBox::new("foo"), 1000)).unwrap();
         }
 
         for response in client.iter().collect::<Vec<_>>() {

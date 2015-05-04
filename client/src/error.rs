@@ -8,7 +8,7 @@ use {QueueId};
 pub enum Error {
     Encoding(EncodingError),
     Decoding(DecodingError),
-    NoQueue(QueueId),
+    NoQueue(QueueId<'static>),
     NoObject(Uuid),
     Requeued,
     Empty,

@@ -2,7 +2,7 @@ use mio::{EventLoop, NonBlock};
 use eventual::{self, Future, Async, Complete, AsyncError};
 use uuid::Uuid;
 
-use common::{ClientMessage, ServerMessage, MAX_CLIENT_MESSAGE_LEN};
+use common::{ClientMessage, ServerMessage, SliceBox, MAX_CLIENT_MESSAGE_LEN};
 use rt::Handler;
 use queue::{Queue, Queues};
 
@@ -49,34 +49,36 @@ impl<Q: Queue> Connection<Q> {
         // Process 1 or more messages read into the incoming buffer.
         //
         // Sometimes more than one message will be transferred.
-        while let Ok((message, message_len)) = ClientMessage::decode(&self.incoming) {
+        while let Ok((message, message_len)) =
+                ClientMessage::<'static>::decode(&self.incoming) {
             // Chop off the message we just processed.
             self.incoming = self.incoming[message_len as usize..].to_vec();
 
             let outgoing = Cursor::new(try!(match message {
                 ClientMessage::CreateQueue(id) => {
-                    queues.insert(id);
+                    queues.insert(id.take());
                     ServerMessage::QueueCreated
                 },
 
                 ClientMessage::DeleteQueue(id) => {
-                    queues.remove(&id)
+                    queues.remove(id.as_ref())
                         .map(|_| ServerMessage::QueueDeleted)
                         .unwrap_or(ServerMessage::NoSuchEntity)
                 },
 
                 ClientMessage::Enqueue(id, object) => {
                     let uuid = Uuid::new_v4();
-                    queues.queue(&id).map(|queue| {
-                        match queue.enqueue(uuid.clone(), object) {
+                    queues.queue(id.as_ref()).map(|queue| {
+                        match queue.enqueue(uuid.clone(), object.take()) {
                             Ok(()) => ServerMessage::ObjectQueued(uuid),
-                            Err((uuid, data)) => ServerMessage::Full(uuid, data)
+                            Err((uuid, data)) =>
+                                ServerMessage::Full(uuid, SliceBox::boxed(data))
                         }
                     }).unwrap_or(ServerMessage::NoSuchEntity)
                 },
 
                 ClientMessage::Read(id, timeout) =>
-                    try!(self.read_ms(evloop, queues, id, timeout)),
+                    try!(self.read_ms(evloop, queues, id.as_ref(), timeout)),
 
                 ClientMessage::Confirm(uuid) => self.confirm(&uuid)
             }.encode()));
@@ -107,7 +109,7 @@ impl<Q: Queue> Connection<Q> {
     }
 
     fn read_ms<Qu>(&mut self, evloop: &mut EventLoop<Handler<Qu>>,
-                  queues: &Qu, id: String, timeout: u64) -> Result<ServerMessage, Error>
+                  queues: &Qu, id: &str, timeout: u64) -> Result<ServerMessage, Error>
     where Qu: Queues<Queue=Q> + Send {
         if let Some(queue) = queues.queue(&id) {
             let top = queue.dequeue();
@@ -138,7 +140,7 @@ impl<Q: Queue> Connection<Q> {
                 self.unconfirmed.insert(uuid.clone(),
                                         (confirm_tx, cancellation_rx));
 
-                Ok(ServerMessage::Read(uuid, object))
+                Ok(ServerMessage::Read(uuid, SliceBox::boxed(object)))
             } else {
                 Ok(ServerMessage::Empty)
             }
@@ -162,7 +164,7 @@ impl<Q: Queue> Connection<Q> {
                         match queue.requeue(id, data) {
                             Ok(()) => ServerMessage::Requeued,
                             Err((id, data)) => {
-                                ServerMessage::Full(id, data)
+                                ServerMessage::Full(id, SliceBox::boxed(data))
                             }
                         }
                     },
