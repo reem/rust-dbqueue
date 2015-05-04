@@ -3,7 +3,8 @@ use eventual::{self, Future, Async, Complete};
 use uuid::Uuid;
 
 use common::{ClientMessage, ServerMessage, MAX_CLIENT_MESSAGE_LEN};
-use rt::{Handler, Queue};
+use rt::Handler;
+use queue::{Queue, Queues};
 
 use std::net::TcpStream;
 use std::io::{self, Cursor, ErrorKind};
@@ -36,8 +37,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn readable(&mut self, queues: &mut HashMap<String, Queue>,
-                    evloop: &mut EventLoop<Handler>) -> Result<(), Error> {
+    pub fn readable<Q>(&mut self, queues: &Q, evloop: &mut EventLoop<Handler<Q>>)
+        -> Result<(), Error>
+    where Q: Queues + Send {
         match io::copy(&mut self.connection, &mut self.incoming) {
             Ok(_) => {},
             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {},
@@ -53,8 +55,7 @@ impl Connection {
 
             let outgoing = Cursor::new(try!(match message {
                 ClientMessage::CreateQueue(id) => {
-                    queues.entry(id)
-                        .or_insert_with(|| Queue(Default::default()));
+                    queues.insert(id);
                     ServerMessage::QueueCreated
                 },
 
@@ -66,8 +67,8 @@ impl Connection {
 
                 ClientMessage::Enqueue(id, object) => {
                     let uuid = Uuid::new_v4();
-                    queues.get(&id).map(|queue| {
-                        queue.borrow_mut().push_back((uuid.clone(), object));
+                    queues.queue(&id).map(|queue| {
+                        queue.enqueue(uuid.clone(), object);
                         ServerMessage::ObjectQueued(uuid)
                     }).unwrap_or(ServerMessage::NoSuchEntity)
                 },
@@ -114,11 +115,11 @@ impl Connection {
         }
     }
 
-    fn read_ms(&mut self, evloop: &mut EventLoop<Handler>,
-               queues: &mut HashMap<String, Queue>,
-               id: String, timeout: u64) -> Result<ServerMessage, Error> {
-        if let Some(queue) = queues.get(&id).cloned() {
-            let top = queue.borrow_mut().pop_front();
+    fn read_ms<Q>(&mut self, evloop: &mut EventLoop<Handler<Q>>,
+                  queues: &Q, id: String, timeout: u64) -> Result<ServerMessage, Error>
+    where Q: Queues + Send {
+        if let Some(queue) = queues.queue(&id) {
+            let top = queue.dequeue();
             if let Some((uuid, object)) = top {
                 let (timeout_tx, timeout_rx) = Future::pair();
                 let (confirm_tx, confirm_rx) = Future::pair();
@@ -131,7 +132,7 @@ impl Connection {
                     .map(move |(choice, _)| {
                         match choice {
                             // Timeout expired first.
-                            0 => queue.borrow_mut().push_front((cuuid, cobject)),
+                            0 => queue.requeue(cuuid, cobject),
                             // Confirm received first.
                             1 => cancellation_tx.complete(()),
                             x => panic!("Received impossible hint {:?} from select", x)
