@@ -97,7 +97,8 @@ impl Handler {
             },
 
             Ok(None) => {
-                panic!("Handler tried to accept on a blocked acceptor.")
+                // Can occur when a client process dies.
+                error!("Handler tried to accept on a blocked acceptor.")
             },
 
             Err(e) => {
@@ -169,7 +170,7 @@ impl mio::Handler for Handler {
 
         match &mut self.slab[token] {
             &mut Registration::Connection(ref mut conn) => conn.writable(),
-            _ => { panic!("Received writable on an acceptor.") }
+            _ => { error!("Received writable on an acceptor.") }
         }
     }
 
