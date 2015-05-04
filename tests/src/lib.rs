@@ -39,7 +39,7 @@ mod tests {
 
     fn listener(addr: &net::SocketAddr) -> NonBlock<net::TcpListener> {
         let socket = tcp::v4().unwrap();
-        socket.set_reuseport(true).unwrap();
+        socket.set_reuseaddr(true).unwrap();
         socket.bind(addr).unwrap();
         socket.listen(1024).unwrap()
     }
