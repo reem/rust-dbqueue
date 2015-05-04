@@ -142,10 +142,10 @@ mod test {
 
             let id1 = unwrap_queued_message(responses.next().unwrap());
             let id2 = unwrap_queued_message(responses.next().unwrap());
-            let data1 = unwrap_data_message(responses.next().unwrap());
+            let data1 = unwrap_data_message(responses.next().unwrap()).1;
             let id3 = unwrap_queued_message(responses.next().unwrap());
-            let data2 = unwrap_data_message(responses.next().unwrap());
-            let data3 = unwrap_data_message(responses.next().unwrap());
+            let data2 = unwrap_data_message(responses.next().unwrap()).1;
+            let data3 = unwrap_data_message(responses.next().unwrap()).1;
 
 
             (id1, id2, id3, data1, data2, data3)
@@ -181,11 +181,54 @@ mod test {
         }
     }
 
-    fn unwrap_data_message(message: ServerMessage) -> Vec<u8> {
+    fn unwrap_data_message(message: ServerMessage) -> (Uuid, Vec<u8>) {
         match message {
-            ServerMessage::Read(_, data) => data,
+            ServerMessage::Read(id, data) => (id, data),
             x => panic!("Expected Read, received {:?}", x)
         }
+    }
+
+    #[test]
+    fn test_heavy_request_pipelining() {
+        let addr = sock();
+        let server = Server::start(|x| { thread::spawn(x); }).unwrap();
+        server.listen(tcp::listen(&addr).unwrap()).await().unwrap();
+
+        let mut client = Client::connect(&addr).unwrap();
+        client.create(String::from("foo")).unwrap();
+
+        let mut pipelined = PipelinedClient::connect(&addr).unwrap();
+
+        for i in (0..32) {
+            pipelined
+                .send(&ClientMessage::Enqueue(String::from("foo"), vec![i; 256]))
+                .unwrap();
+        }
+
+        for response in pipelined.iter() {
+            unwrap_queued_message(response);
+        }
+
+        let message = ClientMessage::Read(String::from("foo"), 1000);
+        for _ in (0..32) {
+            pipelined.send(&message).unwrap();
+        }
+
+        let ids = pipelined.iter().map(unwrap_data_message).enumerate()
+            .map(|(index, (id, data))| {
+                assert_eq!(data, vec![index as u8; 256]);
+                id
+            }).collect::<Vec<_>>();
+
+        for id in ids {
+            pipelined.send(&ClientMessage::Confirm(id)).unwrap();
+        }
+
+        for response in pipelined.iter() {
+            assert_eq!(response, ServerMessage::Confirmed);
+        }
+
+        server.shutdown().await().unwrap();
     }
 }
 
