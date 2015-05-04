@@ -35,12 +35,12 @@ impl Queues for RcQueues {
 }
 
 impl Queue for RcQueue {
-    fn enqueue(&self, id: Uuid, data: Vec<u8>) {
-        self.0.borrow_mut().push_back((id, data))
+    fn enqueue(&self, id: Uuid, data: Vec<u8>) -> Result<(), (Uuid, Vec<u8>)> {
+        Ok(self.0.borrow_mut().push_back((id, data)))
     }
 
-    fn requeue(&self, id: Uuid, data: Vec<u8>) {
-        self.0.borrow_mut().push_front((id, data))
+    fn requeue(&self, id: Uuid, data: Vec<u8>) -> Result<(), (Uuid, Vec<u8>)> {
+        Ok(self.0.borrow_mut().push_front((id, data)))
     }
 
     fn dequeue(&self) -> Option<(Uuid, Vec<u8>)> {
