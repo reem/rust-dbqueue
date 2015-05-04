@@ -1,4 +1,4 @@
-#![cfg_attr(test, feature(ip_addr))]
+#![cfg_attr(test, feature(ip_addr, test))]
 extern crate dbqueue_server;
 extern crate dbqueue_client;
 extern crate dbqueue_common;
@@ -8,7 +8,10 @@ extern crate uuid;
 extern crate env_logger;
 
 #[cfg(test)]
-mod test {
+extern crate test;
+
+#[cfg(test)]
+mod tests {
     use dbqueue_server::{Server};
     use dbqueue_client::{Client, Message, PipelinedClient};
     use dbqueue_common::{ClientMessage, ServerMessage};
@@ -18,6 +21,7 @@ mod test {
     use mio::{EventLoopConfig, NonBlock, Socket, tcp};
     use eventual::Async;
     use uuid::Uuid;
+    use test::Bencher;
     use env_logger;
 
     use std::{thread, net};
@@ -195,8 +199,8 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_heavy_request_pipelining() {
+    #[bench]
+    fn bench_roundtrip_pipelining(b: &mut Bencher) {
         let addr = sock();
         let server = Server::start(|x| { thread::spawn(x); }).unwrap();
         server.listen(listener(&addr)).await().unwrap();
@@ -206,34 +210,36 @@ mod test {
 
         let mut pipelined = PipelinedClient::connect(&addr).unwrap();
 
-        for i in (0..32) {
-            pipelined
-                .send(&ClientMessage::Enqueue(String::from("foo"), vec![i; 256]))
-                .unwrap();
-        }
+        b.iter(|| {
+            for i in (0..32) {
+                pipelined
+                    .send(&ClientMessage::Enqueue(String::from("foo"), vec![i; 256]))
+                    .unwrap();
+            }
 
-        for response in pipelined.iter() {
-            unwrap_queued_message(response);
-        }
+            for response in pipelined.iter() {
+                unwrap_queued_message(response);
+            }
 
-        let message = ClientMessage::Read(String::from("foo"), 1000);
-        for _ in (0..32) {
-            pipelined.send(&message).unwrap();
-        }
+            let message = ClientMessage::Read(String::from("foo"), 1000);
+            for _ in (0..32) {
+                pipelined.send(&message).unwrap();
+            }
 
-        let ids = pipelined.iter().map(unwrap_data_message).enumerate()
-            .map(|(index, (id, data))| {
-                assert_eq!(data, vec![index as u8; 256]);
-                id
-            }).collect::<Vec<_>>();
+            let ids = pipelined.iter().map(unwrap_data_message).enumerate()
+                .map(|(index, (id, data))| {
+                    assert_eq!(data, vec![index as u8; 256]);
+                    id
+                }).collect::<Vec<_>>();
 
-        for id in ids {
-            pipelined.send(&ClientMessage::Confirm(id)).unwrap();
-        }
+            for id in ids {
+                pipelined.send(&ClientMessage::Confirm(id)).unwrap();
+            }
 
-        for response in pipelined.iter() {
-            assert_eq!(response, ServerMessage::Confirmed);
-        }
+            for response in pipelined.iter() {
+                assert_eq!(response, ServerMessage::Confirmed);
+            }
+        });
 
         server.shutdown().await().unwrap();
     }
